@@ -10,12 +10,8 @@ namespace GZipTest
 {
     class Program
     {
-
-        // Hardcoded variable for CPU cores count
-        static int _cpuCount = 4;
-
-        // Data buffer which is shared between threads
-        static byte[][] _buffer;
+        // Threads count according to CPU cores count
+        static int _threadCount;
 
         // Data buffer which is shared between threads
         static byte[][] _srcBuffer;
@@ -23,116 +19,20 @@ namespace GZipTest
         // Destination data buffer which is shared between threads
         static byte[][] _dstBuffer;
 
-        // Hardcoded size of buffer to read from file to memory
-        static int _sizeofBuffer = 1024 * 1024 * 1024; // 1024M
+        // Pool of threads
+        static Thread[] _threads;
 
-        // Hardcoded name of source file to pack
-        static String srcFileName = @"E:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
+        // HARDCODE: size of a buffer per thread
+        static int _chunkSize = 512 * 1024 * 1024; // 512M per thread
 
-
-        static void CountThread(int id)
-        {
-            for (UInt64 i = 0; i < UInt64.MaxValue; i++)
-            {
-                //Console.WriteLine(String.Format("Thread {0}: counting {1}", id, (i+1)));
-                //Thread.Sleep(100);
-            }
-        }
-
-        static void FileReadThread(FileStream stream, long offset, long count)
-        {
-            Console.WriteLine(String.Format("Got offset = {0}; length = {1}", offset, count));
-
-            using (FileStream dstFileStream = new FileStream(@"e:\tmp\compressed-file.gz", FileMode.CreateNew))
-            {
-                using (GZipStream compressionStream = new GZipStream(dstFileStream, CompressionMode.Compress))
-                {
-                    //compressionStream.Write
-                }
-            }
-            
-
-            /*
-            byte[] buffer = new byte[count];
-            int bytesRead = stream.Read(buffer, 0, (int)count);
-
-            Console.WriteLine(String.Format("Read {0} bytes from offset {1} to {0}", bytesRead, offset, offset + count));
-            */
-        }
-
-
-        static int threadNumber = Environment.ProcessorCount;
-
-        //static Thread[] tPool = new Thread[threadNumber];
-
-        // data read from source file
-        static byte[][] dataArray = new byte[threadNumber][];
-
-        // compressed data
-        static byte[][] compressedDataArray = new byte[threadNumber][];
-
-        static int dataPortionSize = 10000000;
-        static int dataArraySize = dataPortionSize * threadNumber;
-
-        static public void Compress(string inFileName)
-        {
-
-            FileStream inFile = new FileStream(inFileName, FileMode.Open, FileAccess.Read);
-            FileStream outFile = new FileStream(inFileName + ".gz", FileMode.Append);
-            int _dataPortionSize;
-            Thread[] tPool;
-            Console.Write("Compressing...");
-            while (inFile.Position < inFile.Length)
-            {
-                Console.Write(".");
-                tPool = new Thread[threadNumber];
-                for (int portionCount = 0; (portionCount < threadNumber) && (inFile.Position < inFile.Length); portionCount++)
-                {
-                    if (inFile.Length - inFile.Position <= dataPortionSize)
-                    {
-                        _dataPortionSize = (int)(inFile.Length - inFile.Position);
-                    }
-                    else
-                    {
-                        _dataPortionSize = dataPortionSize;
-                    }
-                    dataArray[portionCount] = new byte[_dataPortionSize];
-                    inFile.Read(dataArray[portionCount], 0, _dataPortionSize);
-
-                    tPool[portionCount] = new Thread(CompressBlock);
-                    tPool[portionCount].Start(portionCount);
-                }
-
-                for (int portionCount = 0; (portionCount < threadNumber) && (tPool[portionCount] != null);)
-                {
-                    if (tPool[portionCount].ThreadState == ThreadState.Stopped)
-                    {
-                        outFile.Write(compressedDataArray[portionCount], 0, compressedDataArray[portionCount].Length);
-                        portionCount++;
-                    }
-                }
-            }
-
-            outFile.Close();
-            inFile.Close();
-        }
-
-        static public void CompressBlock(object i)
-        {
-            using (MemoryStream output = new MemoryStream(dataArray[(int)i].Length))
-            {
-                using (GZipStream cs = new GZipStream(output, CompressionMode.Compress))
-                {
-                    cs.Write(dataArray[(int)i], 0, dataArray[(int)i].Length);
-                }
-                compressedDataArray[(int)i] = output.ToArray();
-            }
-        }
+        // HARDCODE: name of source file to pack
+        static String _srcFileName = @"D:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
 
 
         // Threaded compression function
-        static public void BlockCompressionThread(int threadIndex)
+        static public void BlockCompressionThread(object parameter)
         {
+            int threadIndex = (int)parameter;
             using (MemoryStream outputStream = new MemoryStream(_srcBuffer[threadIndex].Length))
             {
                 using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
@@ -146,133 +46,75 @@ namespace GZipTest
 
         static int Main(string[] args)
         {
+            // Init local variables
+            _threads = new Thread[_threadCount];
+            _threadCount = Environment.ProcessorCount;
+            
+            FileInfo srcFileInfo = new FileInfo(_srcFileName);
+            String dstFileName = srcFileInfo.FullName + ".gz";
 
-            Compress(Program.srcFileName);
-
-            /*
-            FileInfo srcFileInfo = new FileInfo(srcFileName);
-            //String dstFileName = srcFileInfo.FullName + ".gz";
-
-            using (FileStream srcFileStream = File.Open(srcFileName, FileMode.Open, FileAccess.Read))
+            int bytesRead;
+            int bufferSize;
+            using (FileStream sourceStream = new FileStream(_srcFileName, FileMode.Open, FileAccess.Read))
             {
-                int bytesRead = 0;
-                do
+                using (FileStream destinationStream = new FileStream(dstFileName, FileMode.Create))
                 {
-                    bytesRead = srcFileStream.Read(Program._buffer, 0, Program._buffer.Length);
-
-                    if (bytesRead > 0)
+                    while (sourceStream.Position < sourceStream.Length)
                     {
-                        // Split the buffer between threads
-                        long threadBufferSize = bytesRead / Program._cpuCount;
-                        long firstThreadBufferSize = bytesRead - threadBufferSize * (Program._cpuCount - 1);
+                        _srcBuffer = new byte[_threadCount][];
+                        _dstBuffer = new byte[_threadCount][];
 
-                        // Calculating thread count according to CPU cores count
-                        List<Thread> threads = new List<Thread>();
-                        long offset = 0;
-                        long lenght = 0;
-                        for (int i = 0; i < Program._cpuCount; i++)
+                        for (int threadIndex = 0; threadIndex < _threadCount; threadIndex++)
                         {
-                            String dstFileName = srcFileInfo.FullName + "_" + i + ".gz";
-                            using (FileStream dstFileStream = File.Create(dstFileName))
+                            if ((sourceStream.Length - sourceStream.Position) < _chunkSize)
                             {
-                                using (GZipStream compressionStream = new GZipStream(dstFileStream, CompressionMode.Compress))
-                                {
-                                    //compressionStream.Write
-                                }
-                            }
-
-                            /*
-                            if (i == 0)
-                            {
-                                offset = 0;
-                                lenght = firstChunkSize;
+                                bufferSize = (int)(sourceStream.Length - sourceStream.Position);
                             }
                             else
                             {
-                                offset = firstChunkSize + (i - 1) * chunkSize;
-                                lenght = chunkSize;
+                                bufferSize = _chunkSize;
                             }
-                            
-                            Thread thread = new Thread(() => FileReadThread(srcFileStream, offset, lenght));
-                            thread.Start();
-                            threads.Add(thread);
-                            
+
+                            if (bufferSize <= 0)
+                            {
+                                break;
+                            }
+
+                            _srcBuffer[threadIndex] = new byte[bufferSize];
+                            bytesRead = sourceStream.Read(_srcBuffer[threadIndex], 0, bufferSize);
+
+                            _threads[threadIndex] = new Thread(BlockCompressionThread);
+                            _threads[threadIndex].Start(threadIndex);
                         }
-                    }
 
-                } while (bytesRead > 0);
-            }
-
-            /*
-            String srcFileName = @"E:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
-            FileInfo srcFileInfo = new FileInfo(srcFileName);
-
-            long chunkSize = (srcFileInfo.Length / Program._cpuCount);
-            long firstChunkSize = srcFileInfo.Length - chunkSize * (Program._cpuCount-1);
-
-            using (FileStream srcFileStream = File.Open(srcFileName, FileMode.Open, FileAccess.Read))
-            {
-                List<Thread> threads = new List<Thread>();
-                long offset = 0;
-                long lenght = 0;
-                for (int i = 0; i < Program._cpuCount; i++)
-                {
-                    if (i == 0)
-                    {
-                        offset = 0;
-                        lenght = firstChunkSize;
-                    }
-                    else
-                    {
-                        offset = firstChunkSize + (i - 1) * chunkSize;
-                        lenght = chunkSize;
-                    }
-
-                    Thread thread = new Thread(() => FileReadThread(srcFileStream, offset, lenght));
-                    thread.Start();
-                    threads.Add(thread);
-                }
-
-
-            }
-            */
-
-            /*
-            Thread t0 = new Thread(() => CountThread(0));
-            Thread t1 = new Thread(() => CountThread(1));
-            Thread t2 = new Thread(() => CountThread(2));
-            Thread t3 = new Thread(() => CountThread(2));
-            t0.Start();
-            t1.Start();
-            t2.Start();
-            t3.Start();
-            */
-
-            //String srcDirectoryPath = @"e:\Downloads\Movies\";
-            //DirectoryInfo sourceDirectory = new DirectoryInfo(srcDirectoryPath);
-            //sourceDirectory.GetFiles()
-
-            /*
-            String checkFileName = @"E:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY (1).mp4";
-            using (FileStream compressedFileStream = File.OpenRead(dstFileName))
-            {
-                using (GZipStream decompressionStream = new GZipStream(compressedFileStream, CompressionMode.Decompress))
-                {
-                    using (FileStream dstFileStream = File.Create(checkFileName))
-                    {
-                        int bytesRead = 0;
+                        // Waiting for all threads to exit
+                        Boolean bAllThreadsFinished;
                         do
                         {
-                            bytesRead = decompressionStream.Read(buffer, 0, buffer.Length);
-                            if (bytesRead > 0)
+                            bAllThreadsFinished = true;
+                            for (int threadIndex = 0; threadIndex < _threadCount; threadIndex++)
                             {
-                                dstFileStream.Write(buffer, 0, bytesRead);
+                                if (_threads[threadIndex].ThreadState == ThreadState.Running)
+                                {
+                                    bAllThreadsFinished = false;
+                                }
                             }
-                        } while (bytesRead > 0);
-                    }
-                }
-            }
-            */
+
+                        } while (!bAllThreadsFinished);
+
+                        // Writing results to the output file
+                        for (int threadIndex = 0; threadIndex < _threadCount; threadIndex++)
+                        {
+                            if ( _dstBuffer[threadIndex] != null && _dstBuffer[threadIndex].Length > 0)
+                            {
+                                destinationStream.Write(_dstBuffer[threadIndex], 0, _dstBuffer[threadIndex].Length);
+                            }
+                        }
+                    } // Advancing to the next block of data until the end of the source file
+
+                } // using destinationStream
+
+            } // using sourceStream
 
             Console.ReadLine();
 
