@@ -26,7 +26,8 @@ namespace GZipTest
         static int _chunkSize = 512 * 1024 * 1024; // 512M per thread
 
         // HARDCODE: name of source file to pack
-        static String _srcFileName = @"D:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
+        static String _srcFileName = @"E:\Downloads\Movies\Mad.Max.Fury.Road.2015.1080p.BluRay.AC3.x264-ETRG.mkv";
+        //static String _srcFileName = @"D:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
 
 
         // Threaded compression function
@@ -47,9 +48,9 @@ namespace GZipTest
         static int Main(string[] args)
         {
             // Init local variables
-            _threads = new Thread[_threadCount];
             _threadCount = Environment.ProcessorCount;
-            
+            _threads = new Thread[_threadCount];
+
             FileInfo srcFileInfo = new FileInfo(_srcFileName);
             String dstFileName = srcFileInfo.FullName + ".gz";
 
@@ -94,7 +95,7 @@ namespace GZipTest
                             bAllThreadsFinished = true;
                             for (int threadIndex = 0; threadIndex < _threadCount; threadIndex++)
                             {
-                                if (_threads[threadIndex].ThreadState == ThreadState.Running)
+                                if (_threads[threadIndex] != null && _threads[threadIndex].ThreadState == ThreadState.Running)
                                 {
                                     bAllThreadsFinished = false;
                                 }
