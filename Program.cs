@@ -125,6 +125,7 @@ namespace GZipTest
                 while (_inputStream.Position < _inputStream.Length)
                 {
                     // TODO: Add 'thread slot free' event from running threads if no thread has been started during current loop
+                    // TODO: Read a block to internal buffer and wait for a free thread in order to speed up the whole process
                     hasStartedThread = false;
 
                     for (int threadIndex = 0; threadIndex < _threadCount; threadIndex++)
@@ -203,9 +204,15 @@ namespace GZipTest
                         {
                             if (_threads[threadIndex].SequenceNumber == _writeSequenceNumber)
                             {
-                                _outputStream.Write(_threads[threadIndex].OutputBuffer, 0, _threads[threadIndex].OutputBuffer.Length);
-                                _writeSequenceNumber++;
+                                // Free up compression thread resources 
+                                //  to allow file reader function to read a new chunk of data 
+                                //  without waiting for compressed block to be written out
+                                byte[] buffer = _threads[threadIndex].OutputBuffer;
                                 _threads[threadIndex] = null;
+
+                                _outputStream.Write(buffer, 0, buffer.Length);
+                                _writeSequenceNumber++;
+                                
                                 hasWrittenData = true;
                             }
                         }
