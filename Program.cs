@@ -72,7 +72,7 @@ namespace GZipTest
     {
         // Threads pool
         //private static CGZipThread[] s_threads;
-        private static Dictionary<Int64, Thread> s_threads;
+        private static Dictionary<Int64, Thread> s_workerThreads;
 
         // Read sequence number
         private static Int64 s_readSequenceNumber;
@@ -87,8 +87,8 @@ namespace GZipTest
         private static Int32 s_chunkSize = 128 * 1024 * 1024; // 128M per thread
 
         // HARDCODE: name of source file to pack
-        static String s_srcFileName = @"E:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
-        //static String s_srcFileName = @"E:\Downloads\Movies\Crazy.Stupid.Love.2011.1080p.MKV.AC3.DTS.Eng.NL.Subs.EE.Rel.NL.mkv";
+        //static String s_srcFileName = @"E:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
+        static String s_srcFileName = @"E:\Downloads\Movies\Crazy.Stupid.Love.2011.1080p.MKV.AC3.DTS.Eng.NL.Subs.EE.Rel.NL.mkv";
         //static String _srcFileName = @"D:\tmp\2016-02-03-raspbian-jessie.img";
         //private static String s_srcFileName = @"D:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
 
@@ -99,65 +99,31 @@ namespace GZipTest
         private static FileStream s_outputStream;
 
         // Flag that file read thread has exited
-        private static Boolean s_isFileReadThreadTerminated;
+        private static Boolean s_isInputFileRead;
 
         // Flag that file write thread has exited
-        private static Boolean s_isFileWriteThreadTerminated;
+        private static Boolean s_isOutputFileWritten;
 
         // Input data queue
-        private static Dictionary<Int64, Byte[]> s_readQueue;
-
-        // Output data queue
-        private static Dictionary<Int64, Byte[]> s_writeQueue;
+        private static Dictionary<Int64, Byte[]> s_inputDataQueue;
 
         // Write buffer lock object
-        private static readonly object s_writeQueueLocker = new Object();
+        private static readonly object s_inputDataQueueLocker = new Object();
+
+        // Output data queue
+        private static Dictionary<Int64, Byte[]> s_outputDataQueue;
+
+        // Flags that all input data has been processed and all worker threads are terminated
+        private static bool s_isDataProcessingDone;
 
         // Read buffer lock object
-        private static readonly object s_readQueueLocker = new Object();
-
-        // Threaded compression function
-        private static void BlockCompressionThread(object parameter)
-        {
-            Int64 threadSequenceNumber = (Int64)parameter;
-            byte[] buffer;
-            
-            lock (s_readQueueLocker)
-            {
-                buffer = s_readQueue[threadSequenceNumber];
-                s_readQueue.Remove(threadSequenceNumber);
-            }            
-
-            lock (s_writeQueueLocker)
-            {
-                s_writeQueue.Add(threadSequenceNumber, buffer);
-            }
-            
-            /*
-            Int32 threadIndex = (Int32)parameter;
-            using (MemoryStream outputStream = new MemoryStream(s_threads[threadIndex].InputBuffer.Length))
-            {
-                using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
-                {
-                    compressionStream.Write(s_threads[threadIndex].InputBuffer, 0, s_threads[threadIndex].InputBuffer.Length);
-                }
-
-                lock (s_writeQueueLocker)
-                {
-                    s_writeQueue.Add(s_threads[threadIndex].SequenceNumber, outputStream.ToArray());
-                }
-
-                // Marking this thread as free
-                s_threads[threadIndex].SequenceNumber = -1;
-            }
-            */
-        }
+        private static readonly object s_outputDataQueueLocker = new Object();
 
         // Threaded file read function
-        private static void InputFileReadThread(object parameter)
+        private static void FileReadThread(object parameter)
         {
             String fileName = (String)parameter;
-            s_isFileReadThreadTerminated = false;
+            s_isInputFileRead = false;
 
             using (s_inputStream = new FileStream(fileName, FileMode.Open, FileAccess.Read))
             {
@@ -191,25 +157,25 @@ namespace GZipTest
                         break; // Reached the end of the file (not required)
                     }
 
-                    lock (s_readQueueLocker)
+                    lock (s_outputDataQueueLocker)
                     {
-                        s_readQueue.Add(s_readSequenceNumber, buffer);
+                        s_inputDataQueue.Add(s_readSequenceNumber, buffer);
                     }
                     
                     s_readSequenceNumber++;
                 }
 
-                s_isFileReadThreadTerminated = true;
+                s_isInputFileRead = true;
             }
         }
 
         // Threaded file write function
-        private static void OutputFileWriteThread(object parameter)
+        private static void FileWriteThread(object parameter)
         {
             // TODO: what if I'll make a output queue (Dictionary<int, byte[]) to which all finished blocks will be copied 
             //  until their's turn comes (by it's write sequence number)
             String fileName = (String)parameter;
-            s_isFileWriteThreadTerminated = false;
+            s_isOutputFileWritten = false;
 
             using (s_outputStream = new FileStream(fileName, FileMode.Create))
             {
@@ -219,24 +185,24 @@ namespace GZipTest
                     hasWrittenData = false;
 
                     Boolean isContainsWriteSequenceNumber = false;
-                    Int32 writeBufferItemsCount = 0;
+                    Int32 writeQueueItemsCount = 0;
 
-                    lock (s_writeQueueLocker)
+                    lock (s_inputDataQueueLocker)
                     {
-                        writeBufferItemsCount = s_writeQueue.Count;
-                        isContainsWriteSequenceNumber = s_writeQueue.ContainsKey(s_writeSequenceNumber);
+                        writeQueueItemsCount = s_outputDataQueue.Count;
+                        isContainsWriteSequenceNumber = s_outputDataQueue.ContainsKey(s_writeSequenceNumber);
                     }
 
-                    if (writeBufferItemsCount > 0 && isContainsWriteSequenceNumber)
+                    if (writeQueueItemsCount > 0 && isContainsWriteSequenceNumber)
                     {
                         // Free up compression thread resources 
                         //  to allow file reader function to read a new chunk of data 
                         //  without waiting for compressed block to be written out
                         byte[] buffer;
-                        lock (s_writeQueueLocker)
+                        lock (s_inputDataQueueLocker)
                         {
-                            buffer = s_writeQueue[s_writeSequenceNumber];
-                            s_writeQueue.Remove(s_writeSequenceNumber);
+                            buffer = s_outputDataQueue[s_writeSequenceNumber];
+                            s_outputDataQueue.Remove(s_writeSequenceNumber);
                         }
 
                         s_outputStream.Write(buffer, 0, buffer.Length);
@@ -250,13 +216,39 @@ namespace GZipTest
                         Thread.Sleep(1000);
                     }
 
-                    if (s_isFileReadThreadTerminated && 
-                        s_readQueue.Count <= 0 &&
-                        s_writeQueue.Count <= 0)
+                    if (s_isDataProcessingDone &&
+                        s_outputDataQueue.Count <= 0)
                     {
-                        s_isFileWriteThreadTerminated = true;
+                        s_isOutputFileWritten = true;
                         return;
                     }
+                }
+            }
+        }
+
+        // Threaded compression function
+        private static void BlockCompressionThread(object parameter)
+        {
+            Int64 threadSequenceNumber = (Int64)parameter;
+            byte[] buffer;
+
+            lock (s_outputDataQueueLocker)
+            {
+                buffer = s_inputDataQueue[threadSequenceNumber];
+                s_inputDataQueue.Remove(threadSequenceNumber);
+            }
+
+            // TODO: fix System.OutOfMemory exception
+            using (MemoryStream outputStream = new MemoryStream(buffer.Length))
+            {
+                using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
+                {
+                    compressionStream.Write(buffer, 0, buffer.Length);
+                }
+
+                lock (s_inputDataQueueLocker)
+                {
+                    s_outputDataQueue.Add(threadSequenceNumber, outputStream.ToArray());
                 }
             }
         }
@@ -269,20 +261,20 @@ namespace GZipTest
             {
                 isWorkerThreadStarted = false;
 
-                if (s_threads.Count < s_maxThreadsCount &&
-                    s_readQueue.Count > 0)
+                if (s_workerThreads.Count < s_maxThreadsCount &&
+                    s_inputDataQueue.Count > 0)
                 {
                     Thread workerThread = new Thread(BlockCompressionThread);
                     // If there's less than maximum allowed threads are running, spawn a new one                    
-                    lock (s_readQueueLocker)
+                    lock (s_outputDataQueueLocker)
                     {
-                        foreach (Int64 threadSequenceNumber in s_readQueue.Keys)
+                        foreach (Int64 threadSequenceNumber in s_inputDataQueue.Keys)
                         {
-                            if (!s_threads.ContainsKey(threadSequenceNumber))
+                            if (!s_workerThreads.ContainsKey(threadSequenceNumber))
                             {
                                 workerThread.Name = String.Format("Block compression (seq: {0})", threadSequenceNumber);
-                                s_threads.Add(threadSequenceNumber, workerThread);
-                                s_threads[threadSequenceNumber].Start(threadSequenceNumber);
+                                s_workerThreads.Add(threadSequenceNumber, workerThread);
+                                s_workerThreads[threadSequenceNumber].Start(threadSequenceNumber);
                                 isWorkerThreadStarted = true;
                                 break;
                             }
@@ -292,26 +284,26 @@ namespace GZipTest
 
                 // Cleaning up finished threads
                 List<Int64> threadsToRemove = new List<Int64>();
-                foreach (Int64 threadSequenceNumber in s_threads.Keys)
+                foreach (Int64 threadSequenceNumber in s_workerThreads.Keys)
                 {
-                    if (s_threads[threadSequenceNumber].ThreadState == ThreadState.Stopped ||
-                        s_threads[threadSequenceNumber].ThreadState == ThreadState.Aborted)
+                    if (s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Stopped ||
+                        s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Aborted)
                     {
                         threadsToRemove.Add(threadSequenceNumber);
                     }
                 }
                 foreach (Int64 threadSequenceNumber in threadsToRemove)
                 {
-                    s_threads.Remove(threadSequenceNumber);
+                    s_workerThreads.Remove(threadSequenceNumber);
                 }
 
                 // If read and write threads are terminated as well as read and write queues are empty
-                if (s_isFileReadThreadTerminated &&
-                    s_isFileWriteThreadTerminated &&
-                    s_readQueue.Count <= 0 &&
-                    s_writeQueue.Count <= 0)
+                if (s_isInputFileRead &&
+                    s_inputDataQueue.Count <= 0 &&
+                    s_workerThreads.Count <= 0)
                 {
                     // stop the thread
+                    s_isDataProcessingDone = true;
                     return;
                 }
 
@@ -327,23 +319,23 @@ namespace GZipTest
         static int Main(string[] args)
         {
             // Init local variables
-            //_threadCount = Environment.ProcessorCount;
-            s_maxThreadsCount = 4;
+            s_maxThreadsCount = Environment.ProcessorCount;
+            //s_maxThreadsCount = 4;
             //s_threads = new CGZipThread[s_threadCount];
-            s_threads = new Dictionary<Int64, Thread>();
-            s_readQueue = new Dictionary<Int64, Byte[]>();
-            s_writeQueue = new Dictionary<Int64, Byte[]>();
+            s_workerThreads = new Dictionary<Int64, Thread>();
+            s_inputDataQueue = new Dictionary<Int64, Byte[]>();
+            s_outputDataQueue = new Dictionary<Int64, Byte[]>();
             s_readSequenceNumber = 0;
             s_writeSequenceNumber = 0;
 
             FileInfo srcFileInfo = new FileInfo(s_srcFileName);
             String dstFileName = srcFileInfo.FullName + ".gz";
 
-            Thread inputFileReadThread = new Thread(InputFileReadThread);
+            Thread inputFileReadThread = new Thread(FileReadThread);
             inputFileReadThread.Name = "Read input file";
             inputFileReadThread.Start(s_srcFileName);
 
-            Thread outputFileWriteThread = new Thread(OutputFileWriteThread);
+            Thread outputFileWriteThread = new Thread(FileWriteThread);
             outputFileWriteThread.Name = "Write output file";
             outputFileWriteThread.Start(dstFileName);
 
