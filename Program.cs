@@ -83,11 +83,11 @@ namespace GZipTest
         static int _threadCount;
 
         // HARDCODE: size of a buffer per thread
-        static int _chunkSize = 256 * 1024 * 1024; // 512M per thread
+        static int _chunkSize = 128 * 1024 * 1024; // 512M per thread
 
         // HARDCODE: name of source file to pack
-        //static String _srcFileName = @"E:\Downloads\Movies\Mad.Max.Fury.Road.2015.1080p.BluRay.AC3.x264-ETRG.mkv";
-        static String _srcFileName = @"D:\tmp\2016-02-03-raspbian-jessie.img";
+        static String _srcFileName = @"E:\Downloads\Movies\Crazy.Stupid.Love.2011.1080p.MKV.AC3.DTS.Eng.NL.Subs.EE.Rel.NL.mkv";
+        //static String _srcFileName = @"D:\tmp\2016-02-03-raspbian-jessie.img";
 
         // Source file stream to read data from
         static FileStream _inputStream;
@@ -120,59 +120,63 @@ namespace GZipTest
             {
                 int bytesRead;
                 int bufferSize;
-                Boolean hasStartedThread;
+                Boolean isThreadStarted;
 
                 while (_inputStream.Position < _inputStream.Length)
                 {
                     // TODO: Add 'thread slot free' event from running threads if no thread has been started during current loop
                     // TODO: Read a block to internal buffer and wait for a free thread in order to speed up the whole process
-                    hasStartedThread = false;
+                    isThreadStarted = false;
 
-                    for (int threadIndex = 0; threadIndex < _threadCount; threadIndex++)
+                    // read data
+                    if ((_inputStream.Length - _inputStream.Position) < _chunkSize)
                     {
-                        if (_threads[threadIndex] == null)
-                        {
-                            // read data
-                            if ((_inputStream.Length - _inputStream.Position) < _chunkSize)
-                            {
-                                bufferSize = (int)(_inputStream.Length - _inputStream.Position);
-                            }
-                            else
-                            {
-                                bufferSize = _chunkSize;
-                            }
+                        bufferSize = (int)(_inputStream.Length - _inputStream.Position);
+                    }
+                    else
+                    {
+                        bufferSize = _chunkSize;
+                    }
 
-                            if (bufferSize <= 0)
+                    if (bufferSize <= 0)
+                    {
+                        break;
+                    }
+
+                    byte[] buffer = new byte[bufferSize];
+                    bytesRead = _inputStream.Read(buffer, 0, buffer.Length);
+                    if (bytesRead <= 0)
+                    {
+                        break; // Reached the end of the file
+                    }
+
+                    do
+                    {
+                        for (int threadIndex = 0; threadIndex < _threadCount; threadIndex++)
+                        {
+                            if (_threads[threadIndex] == null)
                             {
+                                _threads[threadIndex] = new GZipThread();
+                                _threads[threadIndex].InputBuffer = buffer;
+                                _threads[threadIndex].WorkerThread = new Thread(BlockCompressionThread);
+                                _threads[threadIndex].SequenceNumber = _readSequenceNumber;
+                                _threads[threadIndex].WorkerThread.Name = String.Format("Compression (idx: {0}, seq: {1}", threadIndex, _readSequenceNumber);
+                                _threads[threadIndex].WorkerThread.Start(threadIndex);
+
+                                _readSequenceNumber++;
+                                isThreadStarted = true;
                                 break;
                             }
-
-                            _threads[threadIndex] = new GZipThread();
-                            _threads[threadIndex].InputBuffer = new byte[bufferSize];
-
-                            bytesRead = _inputStream.Read(_threads[threadIndex].InputBuffer, 0, _threads[threadIndex].InputBuffer.Length);
-                            if (bytesRead <= 0)
-                            {
-                                break; // Reached the end of the file
-                            }
-
-                            _threads[threadIndex].WorkerThread = new Thread(BlockCompressionThread);
-                            _threads[threadIndex].SequenceNumber = _readSequenceNumber;
-                            _threads[threadIndex].WorkerThread.Name = String.Format("Block compression (idx: {0}, seq: {1}", threadIndex, _readSequenceNumber);
-                            _readSequenceNumber++;
-
-                            _threads[threadIndex].WorkerThread.Start(threadIndex);
-                            hasStartedThread = true;
                         }
-                    }
 
-                    // Waiting for a thread to exit
-                    if (!hasStartedThread)
-                    {
-                        Thread.Sleep(1000);
-                    }
+                        // Waiting for a thread to exit
+                        if (!isThreadStarted)
+                        {
+                            Thread.Sleep(1000);
+                        }
+
+                    } while (!isThreadStarted);
                 }
-
                 _hasFileReadThreadExited = true;
             }
         }
@@ -180,6 +184,8 @@ namespace GZipTest
         // Threaded file write function
         static void OutputFileWriteThread(object parameter)
         {
+            // TODO: what if I'll make a output queue (Dictionary<int, byte[]) to which all finished blocks will be copied 
+            //  until their's turn comes (by it's write sequence number)
             String fileName = (String)parameter;
 
             using (_outputStream = new FileStream(fileName, FileMode.Create))
