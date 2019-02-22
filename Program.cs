@@ -8,6 +8,12 @@ using System.Threading;
 
 namespace GZipTest
 {
+
+    class CGZipCompressor
+    {
+
+    }
+
     class CGZipThread
     {
         private Byte[] _inputBuffer;
@@ -87,10 +93,11 @@ namespace GZipTest
         private static Int32 s_chunkSize = 128 * 1024 * 1024; // 128M per thread
 
         // HARDCODE: name of source file to pack
-        //static String s_srcFileName = @"E:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
-        static String s_srcFileName = @"E:\Downloads\Movies\Crazy.Stupid.Love.2011.1080p.MKV.AC3.DTS.Eng.NL.Subs.EE.Rel.NL.mkv";
-        //static String _srcFileName = @"D:\tmp\2016-02-03-raspbian-jessie.img";
-        //private static String s_srcFileName = @"D:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
+        //private static String s_srcFileName = @"E:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
+        //private static String s_srcFileName = @"E:\Downloads\Movies\Crazy.Stupid.Love.2011.1080p.MKV.AC3.DTS.Eng.NL.Subs.EE.Rel.NL.mkv";
+        //private static String s_srcFileName = @"D:\tmp\2016-02-03-raspbian-jessie.img";
+        //private static String s_srcFileName = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
+        private static String s_srcFileName = @"C:\tmp\uncompressed-file.zip";
 
         // Source file stream to read data from
         private static FileStream s_inputStream;
@@ -135,6 +142,12 @@ namespace GZipTest
                     // TODO: Add 'thread slot free' event from running threads if no thread has been started during current loop
                     // TODO: Read a block to internal buffer and wait for a free thread in order to speed up the whole process
 
+                    // Throtling read
+                    while (s_inputDataQueue.Count >= s_maxThreadsCount * 2)
+                    {
+                        Thread.Sleep(1000);
+                    }
+
                     // read data
                     if ((s_inputStream.Length - s_inputStream.Position) < s_chunkSize)
                     {
@@ -172,8 +185,6 @@ namespace GZipTest
         // Threaded file write function
         private static void FileWriteThread(object parameter)
         {
-            // TODO: what if I'll make a output queue (Dictionary<int, byte[]) to which all finished blocks will be copied 
-            //  until their's turn comes (by it's write sequence number)
             String fileName = (String)parameter;
             s_isOutputFileWritten = false;
 
