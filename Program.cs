@@ -14,6 +14,11 @@ namespace GZipTest
 
     }
 
+    /*static struct SGZipFileHeader
+    {
+        private byte[] MagicHeader = new Byte[0x1f, 0x8b]
+    }*/
+
     public struct SFileReadThreadArguments
     {
         public String fileName;
@@ -27,11 +32,12 @@ namespace GZipTest
 
         // HARDCODE: name of source file to pack
         //private static readonly String s_srcFileName = @"E:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
-        private static readonly String s_srcFileName = @"E:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4.gz";
+        //private static readonly String s_srcFileName = @"E:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4.gz";
         //private static readonly String s_srcFileName = @"E:\Downloads\Movies\Mad.Max.Fury.Road.2015.1080p.BluRay.AC3.x264-ETRG.mkv";
         //private static readonly String s_srcFileName = @"E:\Downloads\Movies\Crazy.Stupid.Love.2011.1080p.MKV.AC3.DTS.Eng.NL.Subs.EE.Rel.NL.mkv";
         //private static readonly String s_srcFileName = @"D:\tmp\2016-02-03-raspbian-jessie.img";
         //private static readonly String s_srcFileName = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
+        private static readonly String s_srcFileName = @"c:\tmp\2016-02-03-raspbian-jessie.img.gz";
         //private static readonly String s_srcFileName = @"C:\tmp\uncompressed-file.zip";
 
         // Threads pool
@@ -154,11 +160,106 @@ namespace GZipTest
             String fileName = (String)parameter;
             s_isInputFileRead = false;
 
+            Byte[] gzipFileSignature = new Byte[] { 0x1F, 0x8B, 0x08 };
+
             Int64 bytesRead;
             Int64 bufferSize;
 
             using (FileStream inputStream = new FileStream(fileName, FileMode.Open, FileAccess.Read))
             {
+
+                Byte[] fileBuffer = null;
+
+                while (inputStream.Position < inputStream.Length)
+                {
+                    if ((inputStream.Length - inputStream.Position) < s_chunkSize)
+                    {
+                        bufferSize = (Int32)(inputStream.Length - inputStream.Position);
+                    }
+                    else
+                    {
+                        bufferSize = s_chunkSize;
+                    }
+
+                    if (bufferSize <= 0)
+                    {
+                        // Ooops
+                    }
+
+                    Byte[] buffer = new Byte[bufferSize];
+                    bytesRead = inputStream.Read(buffer, 0, buffer.Length);
+                    if (bytesRead <= 0)
+                    {
+                        // Ooops // Reached the end of the file (not required)
+                    }
+
+                    int startOffset = -1;
+                    for (int i = 0; i < buffer.Length - 2; i++)
+                    {
+                        if (buffer[i] == gzipFileSignature[0] &&
+                            buffer[i + 1] == gzipFileSignature[1] &&
+                            buffer[i + 2] == gzipFileSignature[2])
+                        {
+                            if (startOffset < 0)
+                            {
+                                startOffset = i;
+
+                                if (fileBuffer != null)
+                                {   // adding to existing file buffer
+
+                                    // Saving current data in file buffer
+                                    Byte[] tmpBuffer = fileBuffer;
+                                    int len = tmpBuffer.Length + i - 1;
+
+                                    // reallocating file buffer
+                                    fileBuffer = new Byte[len];
+
+                                    Array.Copy(tmpBuffer, 0, fileBuffer, 0, tmpBuffer.Length);
+                                    Array.Copy(buffer, 0, fileBuffer, tmpBuffer.Length, i - 1);
+                                    s_inputDataQueue.Add(s_readSequenceNumber, fileBuffer);
+
+                                    s_readSequenceNumber++;
+                                    startOffset = i;
+                                    fileBuffer = null;
+                                }
+                            }
+                            else
+                            {
+                                int len = i - startOffset - 1;
+                                fileBuffer = new Byte[len];
+
+                                Array.Copy(buffer, startOffset, fileBuffer, 0, len);
+                                s_inputDataQueue.Add(s_readSequenceNumber, fileBuffer);
+
+                                s_readSequenceNumber++;
+                                startOffset = i;
+                                fileBuffer = null;
+                            }
+                        }
+
+                        if (i == buffer.Length - 3 &&
+                            startOffset < buffer.Length)
+                        {
+                            int len = buffer.Length - startOffset - 1;
+                            fileBuffer = new Byte[len];
+
+                            Array.Copy(buffer, startOffset, fileBuffer, 0, len);
+
+                            if (inputStream.Position >= inputStream.Length)
+                            {
+                                s_inputDataQueue.Add(s_readSequenceNumber, fileBuffer);
+
+                                s_readSequenceNumber++;
+                                startOffset = -1;  // doesn't matter, but still
+                                fileBuffer = null; // doesn't matter, but still
+                            }
+                        }    
+                    }
+
+                    // TODO: Handle unexpected end of the chunk
+                    Thread.Sleep(1000);
+                }
+                /*
                 using (GZipStream gZipStream = new GZipStream(inputStream, CompressionMode.Decompress))
                 {
                     while (inputStream.Position < inputStream.Length)
@@ -196,7 +297,7 @@ namespace GZipTest
                         s_readSequenceNumber++;
                         s_signalOutputDataReady.Set();
                     }
-                }
+                }*/
             }
 
             s_isInputFileRead = true;
@@ -303,7 +404,7 @@ namespace GZipTest
                 using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
                 {
                     compressionStream.Write(buffer, 0, buffer.Length);
-                }
+                }              
 
                 lock (s_outputDataQueueLocker)
                 {
@@ -432,7 +533,8 @@ namespace GZipTest
         static int Main(string[] args)
         {
             // Init local variables
-            s_maxThreadsCount = Environment.ProcessorCount;
+            //s_maxThreadsCount = Environment.ProcessorCount;
+            s_maxThreadsCount = 1;
             s_maxWriteQueueLength = s_maxThreadsCount * 2;
             s_workerThreads = new Dictionary<Int64, Thread>();
             s_inputDataQueue = new Dictionary<Int64, Byte[]>();
@@ -455,11 +557,11 @@ namespace GZipTest
 
             // Starting file writer thread
             FileInfo srcFileInfo = new FileInfo(s_srcFileName);
-            //String dstFileName = srcFileInfo.FullName + ".gz";
-            String dstFileName = srcFileInfo.FullName.Replace(".gz", null).Replace(".mp4", " (1).mp4");
+            String dstFileName = srcFileInfo.FullName + ".gz";
+            //String dstFileName = srcFileInfo.FullName.Replace(".gz", null).Replace(".mp4", " (1).mp4");
             Thread outputFileWriteThread = new Thread(FileWriteThread);
             outputFileWriteThread.Name = "Write output file";
-            outputFileWriteThread.Start(dstFileName);
+            //outputFileWriteThread.Start(dstFileName);
 
 
             // Starting compression threads manager thread
