@@ -53,7 +53,7 @@ namespace GZipTest
         private static Int32 s_maxWriteQueueLength;
 
         // Source file stream to read data from
-        private static FileStream inputStream;
+        private static FileStream s_inputStream;
 
         // Source file stream to write data to
         private static FileStream s_outputStream;
@@ -97,30 +97,23 @@ namespace GZipTest
         // TODO: Add a comment
         private static readonly Object s_WorkerTreadExitedSignalLocker = new Object();
 
-
         // Threaded file read function
         private static void FileReadThread(object parameter)
         {
-            SFileReadThreadArguments args = (SFileReadThreadArguments)parameter;
+            String fileName = (String)parameter;
+            s_isInputFileRead = false;
 
-            if (args.compressionMode != CompressionMode.Compress && args.compressionMode != CompressionMode.Decompress)
+            using (FileStream inputStream = new FileStream(fileName, FileMode.Open, FileAccess.Read))
             {
-                // TODO: trow an exception
-            }
-
-            s_isInputFileRead = false;          
-
-            using (inputStream = new FileStream(args.fileName, FileMode.Open, FileAccess.Read))
-            {
-                Int64 bytesRead = 0;
-                Int64 bufferSize = 0;
+                Int64 bytesRead;
+                Int64 bufferSize;
 
                 while (inputStream.Position < inputStream.Length)
                 {
                     // Throtling read in order to allow the file writer thread to write out some data
                     s_signalOutputDataQueueReady.WaitOne();
 
-                    // Calculating and allocating read buffer
+                    // Reading data
                     if ((inputStream.Length - inputStream.Position) < s_chunkSize)
                     {
                         bufferSize = (Int32)(inputStream.Length - inputStream.Position);
@@ -134,22 +127,9 @@ namespace GZipTest
                     {
                         break;
                     }
+
                     Byte[] buffer = new Byte[bufferSize];
-
-                    if (args.compressionMode == CompressionMode.Compress)
-                    {
-                        bytesRead = inputStream.Read(buffer, 0, buffer.Length);
-                    }
-                    else if (args.compressionMode == CompressionMode.Decompress)
-                    {
-                        using (GZipStream compressedStream = new GZipStream(inputStream, CompressionMode.Decompress))
-                        {
-                            // TODO: elliminate the bottle neck (single thread decompression)
-                            bytesRead = compressedStream.Read(buffer, 0, buffer.Length);
-                            s_outputDataQueue.Add(s_readSequenceNumber, buffer);
-                        }
-                    }
-
+                    bytesRead = inputStream.Read(buffer, 0, buffer.Length);
                     if (bytesRead <= 0)
                     {
                         break; // Reached the end of the file (not required)
@@ -168,14 +148,72 @@ namespace GZipTest
             }
         }
 
+
+        private static void CompressedFileReadThread(object parameter)
+        {
+            String fileName = (String)parameter;
+            s_isInputFileRead = false;
+
+            Int64 bytesRead;
+            Int64 bufferSize;
+
+            using (FileStream inputStream = new FileStream(fileName, FileMode.Open, FileAccess.Read))
+            {
+                using (GZipStream gZipStream = new GZipStream(inputStream, CompressionMode.Decompress))
+                {
+                    while (inputStream.Position < inputStream.Length)
+                    {
+                        // Throtling read in order to allow the file writer thread to write out some data
+                        s_signalOutputDataQueueReady.WaitOne();
+
+                        // Reading data
+                        if ((inputStream.Length - inputStream.Position) < s_chunkSize)
+                        {
+                            bufferSize = (Int32)(inputStream.Length - inputStream.Position);
+                        }
+                        else
+                        {
+                            bufferSize = s_chunkSize;
+                        }
+
+                        if (bufferSize <= 0)
+                        {
+                            break;
+                        }
+
+                        Byte[] buffer = new Byte[bufferSize];
+                        bytesRead = gZipStream.Read(buffer, 0, buffer.Length);
+                        if (bytesRead <= 0)
+                        {
+                            break; // Reached the end of the file (not required)
+                        }
+
+                        lock (s_outputDataQueueLocker)
+                        {
+                            s_outputDataQueue.Add(s_readSequenceNumber, buffer);
+                        }
+
+                        s_readSequenceNumber++;
+                        s_signalOutputDataReady.Set();
+                    }
+                }
+            }
+
+            s_isInputFileRead = true;
+        }
+
         // Threaded file write function
         private static void FileWriteThread(object parameter)
         {
             String fileName = (String)parameter;
+
             s_isOutputFileWritten = false;
 
             using (s_outputStream = new FileStream(fileName, FileMode.Create))
             {
+                // Initial command to file read thread to start reading
+                s_signalOutputDataQueueReady.Set();
+
                 while (true) // TODO: implement a kill-switch
                 {
                     // Checking if there's any date in output queue
@@ -402,24 +440,29 @@ namespace GZipTest
             s_readSequenceNumber = 0;
             s_writeSequenceNumber = 0;
 
-            FileInfo srcFileInfo = new FileInfo(s_srcFileName);
-            String dstFileName = srcFileInfo.FullName + ".gz";
-            //String dstFileName = srcFileInfo.FullName.Replace(".gz", null).Replace(".mp4", " (1).mp4");
 
-
-            Thread inputFileReadThread = new Thread(FileReadThread);
+            // Starting file reader thread
+            //Thread inputFileReadThread = new Thread(FileReadThread);
+            Thread inputFileReadThread = new Thread(CompressedFileReadThread);
             inputFileReadThread.Name = "Read input file";
-            s_signalOutputDataQueueReady.Set();
-            SFileReadThreadArguments sFileReadArgs;
-            sFileReadArgs.fileName = s_srcFileName;
+            //SFileReadThreadArguments sFileReadArgs;
+            //sFileReadArgs.fileName = s_srcFileName;
             //sFileReadArgs.compressionMode = CompressionMode.Compress;
-            sFileReadArgs.compressionMode = CompressionMode.Decompress;
-            inputFileReadThread.Start(sFileReadArgs);
+            //sFileReadArgs.compressionMode = CompressionMode.Decompress;
+            //inputFileReadThread.Start(sFileReadArgs);
+            inputFileReadThread.Start(s_srcFileName);
 
+
+            // Starting file writer thread
+            FileInfo srcFileInfo = new FileInfo(s_srcFileName);
+            //String dstFileName = srcFileInfo.FullName + ".gz";
+            String dstFileName = srcFileInfo.FullName.Replace(".gz", null).Replace(".mp4", " (1).mp4");
             Thread outputFileWriteThread = new Thread(FileWriteThread);
             outputFileWriteThread.Name = "Write output file";
-            //outputFileWriteThread.Start(dstFileName);
+            outputFileWriteThread.Start(dstFileName);
 
+
+            // Starting compression threads manager thread
             Thread workerThreadsManagerThread = new Thread(WorkerThreadsDispatcher);
             workerThreadsManagerThread.Name = "Worker threads manager";
             //workerThreadsManagerThread.Start(null);
