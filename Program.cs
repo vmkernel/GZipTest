@@ -569,13 +569,13 @@ namespace GZipTest
             String dstFileName = srcFileInfo.FullName.Replace(".gz", null).Replace(".mp4", " (1).mp4");
             Thread outputFileWriteThread = new Thread(FileWriteThread);
             outputFileWriteThread.Name = "Write output file";
-            //outputFileWriteThread.Start(dstFileName);
+            outputFileWriteThread.Start(dstFileName);
 
 
             // Starting compression threads manager thread
             Thread workerThreadsManagerThread = new Thread(WorkerThreadsDispatcher);
             workerThreadsManagerThread.Name = "Worker threads manager";
-            //workerThreadsManagerThread.Start(null);
+            workerThreadsManagerThread.Start(null);
 
             Console.ReadLine();
 
