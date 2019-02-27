@@ -10,11 +10,11 @@ using System.Threading;
 // TODO: Implement debug files for every of every step of compression and decompression
 namespace GZipTest
 {
-
-    class Program
+    public static class CGZipCompressor
     {
         // HARDCODE: size of a buffer per thread
-        private static readonly Int32 s_chunkSize = 256 * 1024 * 1024; // 128M per thread
+        // WARNING: block decompression thread assumes that this is the maximum possible size of the output buffer
+        private static readonly Int32 s_chunkSize = 256 * 1024 * 1024;
 
         // Threads pool
         private static Dictionary<Int64, Thread> s_workerThreads;
@@ -24,64 +24,78 @@ namespace GZipTest
 
         // Read sequence number
         private static Int64 s_writeSequenceNumber;
-
         // Write sequence number lock object
         private static readonly Object s_writeSequenceNumberLocker = new Object();
 
-        // Threads count according to CPU cores count
+        // Maximum worker threads count
         private static Int32 s_maxThreadsCount;
 
-        // Maximum lenght of write queue. After reaching this value file read will be suspended until write queue will be sorten below this value
+        // Maximum lenght of write queue. 
+        // After reaching this value file read thread will wait until write queue will be sorten below this value
         private static Int32 s_maxWriteQueueLength;
 
-        // Source file stream to read data from
-        //private static FileStream s_inputStream;
-
-        // Source file stream to write data to
+        // Output file stream to write data to
         private static FileStream s_outputStream;
 
-        // Flag that file read thread has exited
-        private static Boolean s_isInputFileRead;
+        // Operations mode (compression or decompression)
+        private static CompressionMode s_compressionMode;
+        public static CompressionMode CompressionMode
+        {
+            get
+            {
+                return s_compressionMode;
+            }
+            set
+            {
+                s_compressionMode = value;
+            }
+        }
 
-        // Flags that all input data has been processed and all worker threads are terminated
-        private static bool s_isDataProcessingDone;
-
-        // Flag that file write thread has exited
-        private static Boolean s_isOutputFileWritten;
-
+        // QUEUES
         // Input data queue
+        // Stores blocks that has been read from the input file until they are picked up by Worker threads
         private static Dictionary<Int64, Byte[]> s_inputDataQueue;
-
         // Write buffer lock object
         private static readonly Object s_inputDataQueueLocker = new Object();
 
         // Output data queue
+        // Stores processed (compressed/decompressed) blocks which are produced by Worker threads until they are picked up by output file write thread
         private static Dictionary<Int64, Byte[]> s_outputDataQueue;
-        
         // Read buffer lock object
         private static readonly Object s_outputDataQueueLocker = new Object();
 
-        // Event that fires when output data queue is ready to receive new block of processed data
+
+        // FLAGS
+        // Flag: the input file has been read and the file read thread has exited
+        private static Boolean s_isInputFileRead;
+
+        // Flag: all input data has been processed and all worker threads are terminated
+        private static Boolean s_isDataProcessingDone;
+
+        // Flag: the output file has been written and file write thread has exited
+        private static Boolean s_isOutputFileWritten;
+
+       
+        // INTER-THREAD COMMUNICATION SIGNALS
+        // Event: output data queue is ready to receive new block of processed data
+        // Is used to throttle input file read when output file write queue becames to loong
         private static ManualResetEvent s_signalOutputDataQueueReady = new ManualResetEvent(false);
 
-        // Event that fires when data processing thread finished processing its block of data
+        // Event: a data processing thread finished processing its block of data
         private static ManualResetEvent s_signalOutputDataReady = new ManualResetEvent(false);
-
-        // TODO: Add a comment
-        private static EventWaitHandle s_signalInputDataReady = new EventWaitHandle(false, EventResetMode.AutoReset);
-
-        // TODO: Add a comment
+        // Locker object for s_outputDataReadySignal
         private static readonly Object s_outputDataReadySignalLocker = new Object();
 
-        // TODO: Add a comment
+        // Event: a new block of data has been read by input file read thread
+        private static EventWaitHandle s_signalInputDataReady = new EventWaitHandle(false, EventResetMode.AutoReset);
+        
+        // Event: a worker thread has been terminated
         private static ManualResetEvent s_signalWorkerThreadExited = new ManualResetEvent(false);
-
-        // TODO: Add a comment
+        // Locker object for s_signalWorkerThreadExited
         private static readonly Object s_WorkerTreadExitedSignalLocker = new Object();
 
-        // TODO: Add a comment
-        private static CompressionMode s_compressionMode;
 
+        // FUNCTIONS / PROCEDURES
         // File to compress read function (threaded)
         private static void FileReadThread(object parameter)
         {
@@ -267,7 +281,7 @@ namespace GZipTest
                                 segmentBuffer = new Byte[len];
 
                                 Array.Copy(fileReadBuffer, segmentStartOffset, segmentBuffer, 0, len);
-                            }                            
+                            }
 
                             if (inputStream.Position >= inputStream.Length)
                             {
@@ -285,7 +299,7 @@ namespace GZipTest
                                 segmentStartOffset = -1;  // doesn't matter, but still
                                 segmentBuffer = null; // doesn't matter, but still
                             }
-                        }    
+                        }
                     }
 
                     // TODO: Handle unexpected end of the chunk
@@ -334,7 +348,7 @@ namespace GZipTest
                         isContainsWriteSequenceNumber = s_outputDataQueue.ContainsKey(s_writeSequenceNumber);
                     }
                     if (!isContainsWriteSequenceNumber)
-                    {   
+                    {
                         // If there's no block with correct write sequence number the the queue, wait for the next block and go round the loop
                         s_signalOutputDataReady.WaitOne();
                         lock (s_outputDataReadySignalLocker)
@@ -410,7 +424,7 @@ namespace GZipTest
                 using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
                 {
                     compressionStream.Write(buffer, 0, buffer.Length);
-                }              
+                }
 
                 lock (s_outputDataQueueLocker)
                 {
@@ -489,7 +503,7 @@ namespace GZipTest
                     {
                         inputDataQueueLenght = s_inputDataQueue.Count;
                     }
-                    
+
                     if (inputDataQueueLenght <= 0)
                     {
                         // Wait for a new block of data from the input file
@@ -513,7 +527,7 @@ namespace GZipTest
                         default:
                             break;
                     }
-                    
+
                     // If there's less than maximum allowed threads are running, spawn a new one                    
                     lock (s_inputDataQueueLocker)
                     {
@@ -557,41 +571,35 @@ namespace GZipTest
             s_isDataProcessingDone = true;
         }
 
-        static int Main(string[] args)
+        // Initialize internal variables
+        private static void Initialize()
         {
             // Init local variables
             s_workerThreads = new Dictionary<Int64, Thread>();
             s_inputDataQueue = new Dictionary<Int64, Byte[]>();
             s_outputDataQueue = new Dictionary<Int64, Byte[]>();
 
-            s_maxWriteQueueLength = s_maxThreadsCount * 2;
             s_readSequenceNumber = 0;
             s_writeSequenceNumber = 0;
 
-            // DEBUG
-            //s_maxThreadsCount = Environment.ProcessorCount;
-            s_maxThreadsCount = 1;
-            String inputFilePath = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
-            //s_compressionMode = CompressionMode.Compress;
-            s_compressionMode = CompressionMode.Decompress;
-            // DEBUG
+            /* DEBUG 
+            s_maxThreadsCount = Environment.ProcessorCount;
+            */
+            s_maxThreadsCount = 1; // DEBUG
+            s_maxWriteQueueLength = s_maxThreadsCount * 2; // HARDCODE!
+        }
 
-
-            FileInfo inputFileInfo = new FileInfo(inputFilePath);
-            String compressedFilePath = inputFileInfo.FullName + ".gz";
-            String decompressedFilePath = inputFileInfo.Directory + @"\" + inputFileInfo.Name.Replace(inputFileInfo.Extension, null) + " (1)" + inputFileInfo.Extension;
-
+        // Execute main compression / decompression logic
+        public static void Run(String inputFilePath, String outputFilePath)
+        {
+            Initialize();
 
             // Starting compression threads manager thread
             Thread workerThreadsManagerThread = new Thread(WorkerThreadsDispatcher);
             workerThreadsManagerThread.Name = "Worker threads manager";
             workerThreadsManagerThread.Start(null);
 
-            // Initializing file writer thread
-            Thread outputFileWriteThread = new Thread(FileWriteThread);
-            outputFileWriteThread.Name = "Write output file";
-
-            // Declaring input file read thread
+            // Initializing input file read thread
             Thread inputFileReadThread = null;
             switch (s_compressionMode)
             {
@@ -599,25 +607,48 @@ namespace GZipTest
                     // Starting file reader thread
                     inputFileReadThread = new Thread(FileReadThread);
                     inputFileReadThread.Name = "Read uncompressed input file";
-                    inputFileReadThread.Start(inputFilePath);
-
-                    // Starting compressed file writer thread
-                    outputFileWriteThread.Start(compressedFilePath);
                     break;
 
                 case CompressionMode.Decompress:
                     // Starting file reader thread
                     inputFileReadThread = new Thread(CompressedFileReadThread);
                     inputFileReadThread.Name = "Read compressed input file";
-                    inputFileReadThread.Start(compressedFilePath);
-
-                    // Starting decompressed file writer thread
-                    outputFileWriteThread.Start(decompressedFilePath);
                     break;
 
                 default:
                     break;
-            }            
+            }
+
+            // Starting previously initialized input file read thread
+            inputFileReadThread.Start(inputFilePath);
+
+            // Starting compressed file write thread
+            Thread outputFileWriteThread = new Thread(FileWriteThread);
+            outputFileWriteThread.Name = "Write output file";
+            outputFileWriteThread.Start(outputFilePath);
+        }
+
+        // Execute main compression / decompression logic
+        // Overload with compression mode specification
+        public static void Run(String sourceFilePath, String destinationFilePath, CompressionMode mode)
+        {
+            s_compressionMode = mode;
+            Run(sourceFilePath, destinationFilePath);
+        }
+    }
+
+    class Program
+    {      
+        static int Main(string[] args)
+        {
+            String inputFilePath = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
+
+            FileInfo inputFileInfo = new FileInfo(inputFilePath);
+            String compressedFilePath = inputFileInfo.FullName + ".gz";
+            String decompressedFilePath = inputFileInfo.Directory + @"\" + inputFileInfo.Name.Replace(inputFileInfo.Extension, null) + " (1)" + inputFileInfo.Extension;
+
+            CGZipCompressor.Run(inputFilePath, compressedFilePath, CompressionMode.Compress);
+            CGZipCompressor.Run(compressedFilePath, decompressedFilePath, CompressionMode.Decompress);
 
             Console.ReadLine();
 
