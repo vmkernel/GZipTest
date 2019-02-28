@@ -152,6 +152,7 @@ namespace GZipTest
                 }
 
                 s_isInputFileRead = true;
+                s_signalInputDataReady.Set(); // Unfreeze all awaiting threads
             }
         }
 
@@ -231,6 +232,7 @@ namespace GZipTest
                                     s_readSequenceNumber++;
                                     segmentStartOffset = i;
                                     segmentBuffer = null;
+                                    s_signalInputDataReady.Set();
                                 }
                             }
                             else
@@ -252,6 +254,7 @@ namespace GZipTest
                                 s_readSequenceNumber++;
                                 segmentStartOffset = i;
                                 segmentBuffer = null;
+                                s_signalInputDataReady.Set();
                             }
                         }
 
@@ -298,6 +301,7 @@ namespace GZipTest
                                 s_readSequenceNumber++;
                                 segmentStartOffset = -1;  // doesn't matter, but still
                                 segmentBuffer = null; // doesn't matter, but still
+                                s_signalInputDataReady.Set();
                             }
                         }
                     }
@@ -308,6 +312,7 @@ namespace GZipTest
             }
 
             s_isInputFileRead = true;
+            s_signalInputDataReady.Set(); // Unfreeze all awaiting threads
         }
 
         // Universal (compressed and decompressed) file write function (threaded)
@@ -322,7 +327,7 @@ namespace GZipTest
                 // Initial command to file read thread to start reading
                 s_signalOutputDataQueueReady.Set();
 
-                while (true) // TODO: implement a kill-switch
+                while (!s_isOutputFileWritten) // Don't required, but it's a good fail-safe measure
                 {
                     // Checking if there's any date in output queue
                     Int32 writeQueueItemsCount = 0;
@@ -334,11 +339,20 @@ namespace GZipTest
                     // Suspend the thread until there's no data to write to the output file
                     if (writeQueueItemsCount <= 0)
                     {
+                        if (s_isDataProcessingDone)
+                        {
+                            s_isOutputFileWritten = true;
+                            break;
+                        }
+
+                        /* Doesn't work as intended
+                         * TODO: Fix signaling
                         s_signalOutputDataReady.WaitOne();
                         lock (s_outputDataReadySignalLocker)
                         {
                             s_signalOutputDataReady.Reset();
                         }
+                        */
                     }
 
                     // Checking if there's a block of output data with the same sequence number as the write sequence number
@@ -367,11 +381,11 @@ namespace GZipTest
 
                             if (s_outputDataQueue.Count > s_maxWriteQueueLength)
                             {
-                                //s_signalOutputDataQueueReady.Reset();
+                                s_signalOutputDataQueueReady.Reset();
                             }
                             else
                             {
-                                //s_signalOutputDataQueueReady.Set();
+                                s_signalOutputDataQueueReady.Set();
                             }
                         }
 
@@ -396,12 +410,7 @@ namespace GZipTest
                         }
                     }
 
-                    if (s_isDataProcessingDone &&
-                        s_outputDataQueue.Count <= 0)
-                    {
-                        s_isOutputFileWritten = true;
-                        return;
-                    }
+                    Thread.Sleep(1000); // TODO: replace this workaround with signals
                 }
             }
         }
@@ -418,7 +427,6 @@ namespace GZipTest
                 s_inputDataQueue.Remove(threadSequenceNumber);
             }
 
-            // TODO: fix potential System.OutOfMemory exception
             using (MemoryStream outputStream = new MemoryStream(buffer.Length))
             {
                 using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
@@ -455,7 +463,6 @@ namespace GZipTest
                 s_inputDataQueue.Remove(threadSequenceNumber);
             }
 
-            // TODO: fix potential System.OutOfMemory exception
             using (MemoryStream inputStream = new MemoryStream(buffer))
             {
                 int bytesRead;
@@ -491,6 +498,8 @@ namespace GZipTest
         // Threaded threads dispatcher that starts worker threads and limits their number
         private static void WorkerThreadsDispatcher(object parameter)
         {
+            // TODO: Implement correct signalling
+
             while (!s_isInputFileRead ||
                    s_inputDataQueue.Count > 0 ||
                    s_workerThreads.Count > 0)
@@ -507,7 +516,7 @@ namespace GZipTest
                     if (inputDataQueueLenght <= 0)
                     {
                         // Wait for a new block of data from the input file
-                        //s_signalInputDataReady.WaitOne();
+                        s_signalInputDataReady.WaitOne();
                     }
                 }
 
@@ -578,14 +587,22 @@ namespace GZipTest
             s_workerThreads = new Dictionary<Int64, Thread>();
             s_inputDataQueue = new Dictionary<Int64, Byte[]>();
             s_outputDataQueue = new Dictionary<Int64, Byte[]>();
+            s_outputStream = null;
+            s_isInputFileRead = false;
+            s_isDataProcessingDone = false;
+            s_isOutputFileWritten = false;
+
+            s_signalOutputDataQueueReady.Reset();
+            s_signalInputDataReady.Reset();
+            s_signalInputDataReady.Reset();
+            s_signalWorkerThreadExited.Reset();
 
             s_readSequenceNumber = 0;
             s_writeSequenceNumber = 0;
 
-            /* DEBUG 
+            // DEBUG 
             s_maxThreadsCount = Environment.ProcessorCount;
-            */
-            s_maxThreadsCount = 1; // DEBUG
+            //s_maxThreadsCount = 1; // DEBUG
             s_maxWriteQueueLength = s_maxThreadsCount * 2; // HARDCODE!
         }
 
@@ -626,6 +643,10 @@ namespace GZipTest
             Thread outputFileWriteThread = new Thread(FileWriteThread);
             outputFileWriteThread.Name = "Write output file";
             outputFileWriteThread.Start(outputFilePath);
+
+            inputFileReadThread.Join();
+            outputFileWriteThread.Join();
+            workerThreadsManagerThread.Join();
         }
 
         // Execute main compression / decompression logic
@@ -641,13 +662,15 @@ namespace GZipTest
     {      
         static int Main(string[] args)
         {
-            String inputFilePath = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
+            //String inputFilePath = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
+            String inputFilePath = @"e:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
+            //String inputFilePath = @"e:\Downloads\Movies\Mad.Max.Fury.Road.2015.1080p.BluRay.AC3.x264-ETRG.mkv";
 
             FileInfo inputFileInfo = new FileInfo(inputFilePath);
             String compressedFilePath = inputFileInfo.FullName + ".gz";
             String decompressedFilePath = inputFileInfo.Directory + @"\" + inputFileInfo.Name.Replace(inputFileInfo.Extension, null) + " (1)" + inputFileInfo.Extension;
 
-            CGZipCompressor.Run(inputFilePath, compressedFilePath, CompressionMode.Compress);
+            //CGZipCompressor.Run(inputFilePath, compressedFilePath, CompressionMode.Compress);
             CGZipCompressor.Run(compressedFilePath, decompressedFilePath, CompressionMode.Decompress);
 
             Console.ReadLine();
