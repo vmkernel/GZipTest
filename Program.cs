@@ -7,7 +7,6 @@ using System.IO.Compression;
 using System.Threading;
 
 
-// TODO: Implement debug files for every of every step of compression and decompression
 namespace GZipTest
 {
     public static class CGZipCompressor
@@ -19,6 +18,9 @@ namespace GZipTest
         #endregion
 
         #region FIELDS
+        // First three bytes of a GZip file (compressed block) signature
+        private static readonly Byte[] s_gZipFileSignature = new Byte[] { 0x1F, 0x8B, 0x08 };
+
         #region Threads
         // Threads pool
         private static Dictionary<Int64, Thread> s_workerThreads;
@@ -77,9 +79,6 @@ namespace GZipTest
         }
         #endregion
 
-        // First three bytes of a GZip file (compressed block) signature
-        private static readonly Byte[] s_gZipFileSignature = new Byte[] { 0x1F, 0x8B, 0x08 };
-
         #region Flags
         // Flag: the input file has been read and the file read thread has exited
         private static Boolean s_isInputFileRead;
@@ -105,9 +104,12 @@ namespace GZipTest
         //private static EventWaitHandle s_signalFileReadThreadReady = new EventWaitHandle(false, EventResetMode.AutoReset);
         
         // Event: a worker thread has been terminated
-        private static ManualResetEvent s_signalWorkerThreadExited = new ManualResetEvent(false);
+        private static EventWaitHandle s_signalWorkerThreadExited = new EventWaitHandle(false, EventResetMode.AutoReset);
         // Locker object for s_signalWorkerThreadExited
         private static readonly Object s_WorkerTreadExitedSignalLocker = new Object();
+
+        // Event: a block of output data has been written to the output file
+        private static EventWaitHandle s_signalOutputDataWritten = new EventWaitHandle(false, EventResetMode.AutoReset);
         #endregion
         #endregion
 
@@ -125,11 +127,26 @@ namespace GZipTest
 
                 while (inputStream.Position < inputStream.Length)
                 {
-                    // Throtling read in order to allow the file writer thread to write out some data
+                    // Throtling read of thre file until the file writer thread signals that output data queue is ready to receive more data
                     s_signalOutputDataQueueReady.WaitOne();
 
-                    // TODO: Throttling read in order to not to drain free memory
-                    // Reading data
+                    // Throttling read of the input file in order to not to drain free memory
+                    // If the read queue lenght is greather than maximum allowed value
+                    Int32 readQueueItemsCount;
+                    lock (s_readQueueLocker)
+                    {
+                        readQueueItemsCount = s_readQueue.Count;
+                    }
+                    if (readQueueItemsCount >= s_maxReadQueueLength)
+                    {
+                        // Until a block of data has been written to the output file
+                        s_signalOutputDataWritten.WaitOne();
+                        
+                        // And re-evaluate this contidition
+                        continue;
+                    }
+
+                    // Calculating read block size
                     if ((inputStream.Length - inputStream.Position) < s_chunkSize)
                     {
                         bufferSize = (Int32)(inputStream.Length - inputStream.Position);
@@ -144,6 +161,7 @@ namespace GZipTest
                         break;
                     }
 
+                    // Allocating read buffer and reading a block from the file
                     Byte[] buffer = new Byte[bufferSize];
                     bytesRead = inputStream.Read(buffer, 0, buffer.Length);
                     if (bytesRead <= 0)
@@ -156,26 +174,26 @@ namespace GZipTest
                         s_readQueue.Add(s_readSequenceNumber, buffer);
                     }
 
-                    // debug
+                    #region Debug
                     /*
                     using (FileStream partFile = new FileStream(@"d:\tmp\input_part"+s_readSequenceNumber+".bin", FileMode.Create))
                     {
                         partFile.Write(buffer, 0, buffer.Length);
                     }
                     */
+                    #endregion
 
                     s_readSequenceNumber++;
-                    //s_signalFileReadThreadReady.Set();
                 }
 
                 s_isInputFileRead = true;
-                //s_signalFileReadThreadReady.Set(); // Unfreeze all awaiting threads
             }
         }
 
         // File to decompress read function (threaded)
         private static void FileReadCompressedThread(object parameter)
         {
+            // TODO: move queue limiters from Uncompressed file read thread
             String fileName = (String)parameter;
             s_isInputFileRead = false;
 
@@ -254,7 +272,6 @@ namespace GZipTest
                                     s_readSequenceNumber++;
                                     segmentStartOffset = i;
                                     segmentBuffer = null;
-                                    //s_signalFileReadThreadReady.Set();
                                 }
                             }
                             else
@@ -279,7 +296,6 @@ namespace GZipTest
                                 s_readSequenceNumber++;
                                 segmentStartOffset = i;
                                 segmentBuffer = null;
-                                //s_signalFileReadThreadReady.Set();
                             }
                         }
 
@@ -329,7 +345,6 @@ namespace GZipTest
                                 s_readSequenceNumber++;
                                 segmentStartOffset = -1;  // doesn't matter, but still
                                 segmentBuffer = null; // doesn't matter, but still
-                                //s_signalFileReadThreadReady.Set();
                             }
                         }
                     }
@@ -337,7 +352,6 @@ namespace GZipTest
             }
 
             s_isInputFileRead = true;
-            //s_signalFileReadThreadReady.Set(); // Unfreeze all awaiting threads
         }
 
         // Universal (compressed and decompressed) file write function (threaded)
@@ -407,7 +421,7 @@ namespace GZipTest
 
                         outputStream.Write(buffer, 0, buffer.Length);
 
-                        // debug
+                        #region Debug
                         /*
                         switch (s_compressionMode)
                         {
@@ -428,11 +442,14 @@ namespace GZipTest
                             default:
                                 break;
                         }*/
+                        #endregion
 
                         lock (s_writeSequenceNumberLocker)
                         {
                             s_writeSequenceNumber++;
                         }
+
+                        s_signalOutputDataWritten.Set();
                     }
 
                     Thread.Sleep(1000); // TODO: replace this workaround with signals
@@ -457,6 +474,8 @@ namespace GZipTest
                 using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
                 {
                     compressionStream.Write(buffer, 0, buffer.Length);
+                    // TODO: optimize
+                    //buffer = null;
                 }
 
                 lock (s_writeQueueLocker)
@@ -503,61 +522,11 @@ namespace GZipTest
         // Threaded threads dispatcher that starts worker threads and limits their number
         private static void WorkerThreadsDispatcher(object parameter)
         {
-            // TODO: Implement correct signalling
-            // TODO: Lock queue and threads before get Count
             Int32 readQueueCount = 0;
             do
             {
-                // Sleeping a little to not overload CPU
-                /*
-                if (!s_isInputFileRead)
-                {
-                    Int32 inputDataQueueLenght;
-                    lock (s_readQueueLocker)
-                    {
-                        inputDataQueueLenght = s_readQueue.Count;
-                    }
-
-                    if (inputDataQueueLenght <= 0)
-                    {
-                        // Wait for a new block of data from the input file
-                        //s_signalFileReadThreadReady.WaitOne();
-                    }
-                }*/
-
-                if (s_workerThreads.Count < s_maxThreadsCount)
-                {
-                    Thread workerThread = null;
-                    switch (s_compressionMode)
-                    {
-                        case CompressionMode.Compress:
-                            workerThread = new Thread(BlockCompressionThread);
-                            break;
-
-                        case CompressionMode.Decompress:
-                            workerThread = new Thread(BlockDecompressionThread);
-                            break;
-
-                        default:
-                            break;
-                    }
-
-                    // If there's less than maximum allowed threads are running, spawn a new one                    
-                    lock (s_readQueueLocker)
-                    {
-                        foreach (Int64 threadSequenceNumber in s_readQueue.Keys)
-                        {
-                            if (!s_workerThreads.ContainsKey(threadSequenceNumber))
-                            {
-                                workerThread.Name = String.Format("Data processing (seq: {0})", threadSequenceNumber);
-                                s_workerThreads.Add(threadSequenceNumber, workerThread);
-                                s_workerThreads[threadSequenceNumber].Start(threadSequenceNumber);
-                                break; // control amount of threads to fit in CPU cores number
-                            }
-                        }
-                    }
-                }
-                else
+                // Looking for finished threads
+                if (s_workerThreads.Count > 0)
                 {
                     List<Int32> finishedThreads = new List<Int32>();
                     foreach (Int32 threadSequenceNumber in s_workerThreads.Keys)
@@ -569,20 +538,65 @@ namespace GZipTest
                         }
                     }
 
+                    // If any finished threads has been found
                     foreach (Int32 threadSequenceNumber in finishedThreads)
                     {
+                        // Removing all of them
                         s_workerThreads.Remove(threadSequenceNumber);
                     }
                 }
 
-                Thread.Sleep(1000);
+                // If there's less than maximum allowed threads are running, spawn a new one                    
+                if (s_workerThreads.Count < s_maxThreadsCount)
+                {
+                    // Spawning a new thread
+                    lock (s_readQueueLocker)
+                    {
+                        foreach (Int64 threadSequenceNumber in s_readQueue.Keys)
+                        {
+                            if (!s_workerThreads.ContainsKey(threadSequenceNumber))
+                            {
+                                // Spawn a corresponding thread according to the selected operations mode
+                                Thread workerThread = null;
+                                switch (s_compressionMode)
+                                {
+                                    case CompressionMode.Compress:
+                                        workerThread = new Thread(BlockCompressionThread);
+                                        break;
 
+                                    case CompressionMode.Decompress:
+                                        workerThread = new Thread(BlockDecompressionThread);
+                                        break;
+
+                                    default:
+                                        // TODO: handle the error
+                                        break;
+                                }
+                                // TODO: check workerThread != null
+
+                                workerThread.Name = String.Format("Data processing (seq: {0})", threadSequenceNumber);
+                                s_workerThreads.Add(threadSequenceNumber, workerThread);
+                                s_workerThreads[threadSequenceNumber].Start(threadSequenceNumber);
+                                break;
+                            }
+                        }
+                    }
+                }
+                else 
+                {
+                    // If the limit of running worker thread is reached
+                    // Stop spawning new threads and wait for the running onse to finish
+                    Thread.Sleep(1000);
+                }
+
+                // Check if there's any block of data in the file read queue
                 lock (s_readQueueLocker)
                 {
                     readQueueCount = s_readQueue.Count;
                 }
 
             } while (!s_isInputFileRead ||
+                     s_workerThreads.Count > 0 ||
                      readQueueCount > 0);
 
             s_isDataProcessingDone = true;
@@ -601,16 +615,19 @@ namespace GZipTest
             s_isDataProcessingDone = false;
             s_isOutputFileWritten = false;
 
-            //s_signalOutputDataQueueReady.Reset();
-            s_signalWorkerThreadExited.Reset();
-
             s_readSequenceNumber = 0;
             s_writeSequenceNumber = 0;
 
-            // DEBUG 
-            //s_maxThreadsCount = Environment.ProcessorCount;
-            s_maxThreadsCount = 1; // DEBUG
-            s_maxWriteQueueLength = s_maxThreadsCount * 2; // HARDCODE!
+            // DEBUG
+            // TODO: read mode from config file (gentle: vCPU - 1, regular: vCPU)
+            s_maxThreadsCount = Environment.ProcessorCount - 1; // Because I don't want my PC to hung during a (de)compression process
+
+            // TODO: read this value from config file (as a multiplier for maxTreadsCount, with failback to default value)
+            //s_maxWriteQueueLength = s_maxThreadsCount * 2; // HARDCODE!
+            s_maxWriteQueueLength = 2; // DEBUG
+
+            // TODO: read this value from config file (as a multiplier for maxTreadsCount, with failback to default value)
+            //s_maxReadQueueLength = s_maxThreadsCount * 2; // HARDCODE!
             s_maxReadQueueLength = s_maxThreadsCount * 2; // HARDCODE!
         }
 
@@ -671,18 +688,18 @@ namespace GZipTest
     {      
         static int Main(string[] args)
         {
-            String inputFilePath = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
+            //String inputFilePath = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
             //String inputFilePath = @"c:\tmp\uncompressed-files-archive.zip";
             //String inputFilePath = @"c:\tmp\";
             //String inputFilePath = @"e:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
-            //String inputFilePath = @"e:\Downloads\Movies\Mad.Max.Fury.Road.2015.1080p.BluRay.AC3.x264-ETRG.mkv";
+            String inputFilePath = @"e:\Downloads\Movies\Mad.Max.Fury.Road.2015.1080p.BluRay.AC3.x264-ETRG.mkv";
 
             FileInfo inputFileInfo = new FileInfo(inputFilePath);
             String compressedFilePath = inputFileInfo.FullName + ".gz";
             String decompressedFilePath = inputFileInfo.Directory + @"\" + inputFileInfo.Name.Replace(inputFileInfo.Extension, null) + " (1)" + inputFileInfo.Extension;
 
             CGZipCompressor.Run(inputFilePath, compressedFilePath, CompressionMode.Compress);
-            CGZipCompressor.Run(compressedFilePath, decompressedFilePath, CompressionMode.Decompress);
+            //CGZipCompressor.Run(compressedFilePath, decompressedFilePath, CompressionMode.Decompress);
 
             Console.ReadLine();
 
