@@ -158,6 +158,7 @@ namespace GZipTest
 
                     if (bufferSize <= 0)
                     {
+                        // TODO: handle the error
                         break;
                     }
 
@@ -166,6 +167,7 @@ namespace GZipTest
                     bytesRead = inputStream.Read(buffer, 0, buffer.Length);
                     if (bytesRead <= 0)
                     {
+                        // TODO: handle this
                         break; // Reached the end of the file (not required)
                     }
 
@@ -193,52 +195,69 @@ namespace GZipTest
         // File to decompress read function (threaded)
         private static void FileReadCompressedThread(object parameter)
         {
-            // TODO: move queue limiters from Uncompressed file read thread
             String fileName = (String)parameter;
             s_isInputFileRead = false;
 
             Int64 bytesRead;
-            Int64 fileReadBufferSize;
+            Int64 bufferSize;
 
             using (FileStream inputStream = new FileStream(fileName, FileMode.Open, FileAccess.Read))
             {
 
                 Byte[] segmentBuffer = null;
-                Int32 len;
 
                 while (inputStream.Position < inputStream.Length)
                 {
-                    // Throtling read in order to allow the file writer thread to write out some data
+                    // Throtling read of thre file until the file writer thread signals that output data queue is ready to receive more data
                     s_signalOutputDataQueueReady.WaitOne();
 
-                    // TODO: Throttling read in order to not to drain free memory
+                    // Throttling read of the input file in order to not to drain free memory
+                    // If the read queue lenght is greather than maximum allowed value
+                    Int32 readQueueItemsCount;
+                    lock (s_readQueueLocker)
+                    {
+                        readQueueItemsCount = s_readQueue.Count;
+                    }
+                    if (readQueueItemsCount >= s_maxReadQueueLength)
+                    {
+                        // Until a block of data has been written to the output file
+                        s_signalOutputDataWritten.WaitOne();
+
+                        // And re-evaluate this contidition
+                        continue;
+                    }
+
+                    // Calculating read block size
                     if ((inputStream.Length - inputStream.Position) < s_chunkSize)
                     {
-                        fileReadBufferSize = (Int32)(inputStream.Length - inputStream.Position);
+                        bufferSize = (Int32)(inputStream.Length - inputStream.Position);
                     }
                     else
                     {
-                        fileReadBufferSize = s_chunkSize;
+                        bufferSize = s_chunkSize;
                     }
 
-                    if (fileReadBufferSize <= 0)
+                    if (bufferSize <= 0)
                     {
-                        // Ooops
+                        // TODO: handle the error
+                        break;
                     }
 
-                    Byte[] fileReadBuffer = new Byte[fileReadBufferSize];
-                    bytesRead = inputStream.Read(fileReadBuffer, 0, fileReadBuffer.Length);
+                    Byte[] buffer = new Byte[bufferSize];
+                    bytesRead = inputStream.Read(buffer, 0, buffer.Length);
                     if (bytesRead <= 0)
                     {
                         // Ooops // Reached the end of the file (not required)
+                        // TODO: handle this
+                        break;
                     }
 
                     int segmentStartOffset = -1;
-                    for (int i = 0; i < fileReadBuffer.Length - 2; i++)
+                    for (int i = 0; i < buffer.Length - 2; i++)
                     {
-                        if (fileReadBuffer[i] == s_gZipFileSignature[0] &&
-                            fileReadBuffer[i + 1] == s_gZipFileSignature[1] &&
-                            fileReadBuffer[i + 2] == s_gZipFileSignature[2])
+                        if (buffer[i] == s_gZipFileSignature[0] &&
+                            buffer[i + 1] == s_gZipFileSignature[1] &&
+                            buffer[i + 2] == s_gZipFileSignature[2])
                         {
                             if (segmentStartOffset < 0)
                             {
@@ -249,13 +268,13 @@ namespace GZipTest
 
                                     // Saving current data in file buffer
                                     Byte[] tmpBuffer = segmentBuffer;
-                                    len = tmpBuffer.Length + i;
+                                    bufferSize = tmpBuffer.Length + i;
 
                                     // reallocating file buffer
-                                    segmentBuffer = new Byte[len];
+                                    segmentBuffer = new Byte[bufferSize];
 
                                     Array.Copy(tmpBuffer, 0, segmentBuffer, 0, tmpBuffer.Length);
-                                    Array.Copy(fileReadBuffer, 0, segmentBuffer, tmpBuffer.Length, i);
+                                    Array.Copy(buffer, 0, segmentBuffer, tmpBuffer.Length, i);
                                     lock (s_readQueueLocker)
                                     {
                                         s_readQueue.Add(s_readSequenceNumber, segmentBuffer);
@@ -276,10 +295,10 @@ namespace GZipTest
                             }
                             else
                             {
-                                len = i - segmentStartOffset;
-                                segmentBuffer = new Byte[len];
+                                bufferSize = i - segmentStartOffset;
+                                segmentBuffer = new Byte[bufferSize];
 
-                                Array.Copy(fileReadBuffer, segmentStartOffset, segmentBuffer, 0, len);
+                                Array.Copy(buffer, segmentStartOffset, segmentBuffer, 0, bufferSize);
                                 lock (s_readQueueLocker)
                                 {
                                     s_readQueue.Add(s_readSequenceNumber, segmentBuffer);
@@ -299,8 +318,8 @@ namespace GZipTest
                             }
                         }
 
-                        if (i == fileReadBuffer.Length - s_gZipFileSignature.Length &&
-                            segmentStartOffset < fileReadBuffer.Length)
+                        if (i == buffer.Length - s_gZipFileSignature.Length &&
+                            segmentStartOffset < buffer.Length)
                         {
                             if (segmentStartOffset < 0)
                             {
@@ -311,20 +330,20 @@ namespace GZipTest
                             {
                                 // Saving current data in file buffer
                                 Byte[] tmpBuffer = segmentBuffer;
-                                len = tmpBuffer.Length + i + s_gZipFileSignature.Length; // compensating
+                                bufferSize = tmpBuffer.Length + i + s_gZipFileSignature.Length; // compensating
 
                                 // reallocating file buffer
-                                segmentBuffer = new Byte[len];
+                                segmentBuffer = new Byte[bufferSize];
 
                                 Array.Copy(tmpBuffer, 0, segmentBuffer, 0, tmpBuffer.Length);
-                                Array.Copy(fileReadBuffer, 0, segmentBuffer, tmpBuffer.Length, i + s_gZipFileSignature.Length);
+                                Array.Copy(buffer, 0, segmentBuffer, tmpBuffer.Length, i + s_gZipFileSignature.Length);
                             }
                             else
                             {
-                                len = fileReadBuffer.Length - segmentStartOffset;
-                                segmentBuffer = new Byte[len];
+                                bufferSize = buffer.Length - segmentStartOffset;
+                                segmentBuffer = new Byte[bufferSize];
 
-                                Array.Copy(fileReadBuffer, segmentStartOffset, segmentBuffer, 0, len);
+                                Array.Copy(buffer, segmentStartOffset, segmentBuffer, 0, bufferSize);
                             }
 
                             if (inputStream.Position >= inputStream.Length)
@@ -628,7 +647,7 @@ namespace GZipTest
 
             // TODO: read this value from config file (as a multiplier for maxTreadsCount, with failback to default value)
             //s_maxReadQueueLength = s_maxThreadsCount * 2; // HARDCODE!
-            s_maxReadQueueLength = s_maxThreadsCount * 2; // HARDCODE!
+            s_maxReadQueueLength = 2; // HARDCODE!
         }
 
         // Execute main compression / decompression logic
@@ -688,18 +707,18 @@ namespace GZipTest
     {      
         static int Main(string[] args)
         {
-            //String inputFilePath = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
+            String inputFilePath = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
             //String inputFilePath = @"c:\tmp\uncompressed-files-archive.zip";
             //String inputFilePath = @"c:\tmp\";
             //String inputFilePath = @"e:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
-            String inputFilePath = @"e:\Downloads\Movies\Mad.Max.Fury.Road.2015.1080p.BluRay.AC3.x264-ETRG.mkv";
+            //String inputFilePath = @"e:\Downloads\Movies\Mad.Max.Fury.Road.2015.1080p.BluRay.AC3.x264-ETRG.mkv";
 
             FileInfo inputFileInfo = new FileInfo(inputFilePath);
             String compressedFilePath = inputFileInfo.FullName + ".gz";
             String decompressedFilePath = inputFileInfo.Directory + @"\" + inputFileInfo.Name.Replace(inputFileInfo.Extension, null) + " (1)" + inputFileInfo.Extension;
 
-            CGZipCompressor.Run(inputFilePath, compressedFilePath, CompressionMode.Compress);
-            //CGZipCompressor.Run(compressedFilePath, decompressedFilePath, CompressionMode.Decompress);
+            //CGZipCompressor.Run(inputFilePath, compressedFilePath, CompressionMode.Compress);
+            CGZipCompressor.Run(compressedFilePath, decompressedFilePath, CompressionMode.Decompress);
 
             Console.ReadLine();
 
