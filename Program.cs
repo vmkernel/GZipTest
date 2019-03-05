@@ -703,22 +703,122 @@ namespace GZipTest
     }
 
     class Program
-    {      
+    {
+        static void PrintUsage()
+        {
+            String message = String.Format(
+                "\nThis program implements multi-threaded compresses and decompresses for a specified file using GZipStream class from .NET 3.5\n\n" +
+                "Usage:\n" +
+                "{0} MODE SOURCE DESTINATION\n\n" +
+                "MODEs:\n" +
+                "  compress – pack a file\n" + 
+                "    SOURCE - original file path\n" +
+                "    DESTINATION - compressed file path\n\n" + 
+                "  decompress – unpack an archive\n" + 
+                "    SOURCE - compressed file path\n" +
+                "    DESTINATION - decompressed file path\n\n" + 
+                "Examples:\n" +
+                "{0} compress \"c:\\Documents\\iis.log\" \"c:\\Documents\\iis.log.gz\"\n" +
+                "{0} decompress \"c:\\Documents\\iis.log.gz\" \"c:\\Documents\\iis.log\"\n\n",
+                System.AppDomain.CurrentDomain.FriendlyName);
+
+            Console.Write(message);
+        }
+
         static int Main(string[] args)
         {
+            #region Checking arguments
+            // If "help" is requested
+            if (args != null &&
+                args.Length > 0 &&
+                String.Compare(args[0], "help", true) == 0)
+            {
+                PrintUsage();
+                return 0;
+            }
+
+            if (args == null ||
+                args.Length != 3)
+            {
+                // If less or more than 3 arguments are specefied, print an error message
+                String message = String.Format("\nERROR: Incorrect number of parameters (expected: 3, got {0})\n", args.Length);
+                Console.WriteLine(message);
+                Console.WriteLine("Press any key to exit...");
+                Console.ReadLine();
+
+                return 1;
+            }
+
+            // Checking operations mode switch
+            String mode = args[0];
+            if (String.Compare(mode, "compress", true) == 0)
+            {
+                // Setting compression mode
+                Console.WriteLine("Compression mode is specified.");
+                CGZipCompressor.CompressionMode = CompressionMode.Compress;
+            }
+            else if (String.Compare(mode, "decompress", true) == 0)
+            {
+                // Setting decompression mode
+                Console.WriteLine("Decompression mode is specified.");
+                CGZipCompressor.CompressionMode = CompressionMode.Decompress;
+            }
+            else
+            {
+                // Unknown mode is spceified
+                String message = String.Format("\nERROR: Incorrect mode specified (expected: \"compress\" or \"decompress\" or \"help\", got \"{0}\")\n", mode);
+                Console.WriteLine(message);
+                Console.WriteLine("Press any key to exit...");
+                Console.ReadLine();
+
+                return 1;
+            }
+
+            // Checking input file
+            String inputFilePath = args[1];
+            if (!File.Exists(inputFilePath))
+            {
+                // Input file must exists
+                String message = String.Format("\nERROR: Can't find the specified input file \"{0}\"\n", inputFilePath);
+                Console.WriteLine(message);
+                Console.WriteLine("Press any key to exit...");
+                Console.ReadLine();
+
+                return 1;
+            }
+
+            String outputFilePath = args[2];
+            if (File.Exists(outputFilePath))
+            {
+                // Output file mustn't exists
+                String message = String.Format("\nERROR: The specified output file is already exists: \"{0}\"\n", outputFilePath);
+                Console.WriteLine(message);
+                Console.WriteLine("Press any key to exit...");
+                Console.ReadLine();
+
+                return 1;
+            }
+            #endregion
+
+            #region DEBUG
             //String inputFilePath = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
             //String inputFilePath = @"c:\tmp\uncompressed-files-archive.zip";
             //String inputFilePath = @"c:\tmp\";
-            String inputFilePath = @"e:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
+            //String inputFilePath = @"e:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
             //String inputFilePath = @"e:\Downloads\Movies\Mad.Max.Fury.Road.2015.1080p.BluRay.AC3.x264-ETRG.mkv";
+            //FileInfo inputFileInfo = new FileInfo(inputFilePath);
+            //String compressedFilePath = inputFileInfo.FullName + ".gz";
+            //String decompressedFilePath = inputFileInfo.Directory + @"\" + inputFileInfo.Name.Replace(inputFileInfo.Extension, null) + " (1)" + inputFileInfo.Extension;
 
-            FileInfo inputFileInfo = new FileInfo(inputFilePath);
-            String compressedFilePath = inputFileInfo.FullName + ".gz";
-            String decompressedFilePath = inputFileInfo.Directory + @"\" + inputFileInfo.Name.Replace(inputFileInfo.Extension, null) + " (1)" + inputFileInfo.Extension;
+            //CGZipCompressor.Run(inputFilePath, compressedFilePath, CompressionMode.Compress);
+            //CGZipCompressor.Run(compressedFilePath, decompressedFilePath, CompressionMode.Decompress);
+            #endregion
 
-            CGZipCompressor.Run(inputFilePath, compressedFilePath, CompressionMode.Compress);
-            CGZipCompressor.Run(compressedFilePath, decompressedFilePath, CompressionMode.Decompress);
+            // Starting compression
+            Console.WriteLine("Working...");
+            CGZipCompressor.Run(inputFilePath, outputFilePath);
 
+            Console.WriteLine("Press any key to exit...");
             Console.ReadLine();
 
             return 0;
