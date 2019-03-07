@@ -38,9 +38,28 @@ namespace GZipTest
 
         // Emergency shutdown flag
         private static Boolean s_isEmergencyShutdown;
+        public static Boolean IsEmergencyShutdown
+        {
+            get
+            {
+                return s_isEmergencyShutdown;
+            }
+        }
 
         // Emergency shutdown message
         private static String s_emergencyShutdownMessage;
+        public static String EmergenceShutdownMessage
+        {
+            get
+            {
+                if (String.IsNullOrEmpty(s_emergencyShutdownMessage))
+                {
+                    s_emergencyShutdownMessage = "";
+                    
+                }
+                return s_emergencyShutdownMessage;
+            }
+        }
 
         #region Threads
         // Threads pool
@@ -113,9 +132,6 @@ namespace GZipTest
         // Locker object for s_signalWorkerThreadReady
         private static readonly Object s_workerThreadReadySignalLocker = new Object();
 
-        // Event: a new block of data has been read by input file read thread
-        //private static EventWaitHandle s_signalFileReadThreadReady = new EventWaitHandle(false, EventResetMode.AutoReset);
-        
         // Event: a worker thread has been terminated
         private static readonly EventWaitHandle s_signalWorkerThreadExited = new EventWaitHandle(false, EventResetMode.AutoReset);
         // Locker object for s_signalWorkerThreadExited
@@ -141,7 +157,7 @@ namespace GZipTest
             {
                 if (parameter == null)
                 {
-                    throw new ArgumentNullException("parameter", "Input uncomression file path for file read threadn is null");
+                    throw new ArgumentNullException("parameter", "Input uncompressed file path for the File Read thread is null");
                 }
                 String fileName = (String)parameter;    
 
@@ -200,15 +216,6 @@ namespace GZipTest
                             s_readQueue.Add(s_readSequenceNumber, buffer);
                         }
 
-                        #region Debug
-                        /*
-                        using (FileStream partFile = new FileStream(@"d:\tmp\input_part"+s_readSequenceNumber+".bin", FileMode.Create))
-                        {
-                            partFile.Write(buffer, 0, buffer.Length);
-                        }
-                        */
-                        #endregion
-
                         s_readSequenceNumber++;
                     }
                 }
@@ -216,7 +223,7 @@ namespace GZipTest
             catch (Exception ex)
             {
                 s_isEmergencyShutdown = true;
-                s_emergencyShutdownMessage = String.Format("An unhandled exeption in uncompressed file read thread caused the process to stop: {0}", ex.Message);
+                s_emergencyShutdownMessage = String.Format("An unhandled exception in Uncompressed File Read thread caused the process to stop: {0}", ex.Message);
             }
 
             s_isInputFileRead = true;
@@ -225,179 +232,197 @@ namespace GZipTest
         // File to decompress read function (threaded)
         private static void FileReadCompressedThread(object parameter)
         {
-            String fileName = (String)parameter;
             s_isInputFileRead = false;
 
-            Int64 bytesRead;
-            Int64 bufferSize;
-
-            using (FileStream inputStream = new FileStream(fileName, FileMode.Open, FileAccess.Read))
+            if (s_isEmergencyShutdown)
             {
+                return;
+            }
 
-                Byte[] segmentBuffer = null;
-
-                while (inputStream.Position < inputStream.Length)
+            try
+            {
+                if (parameter == null)
                 {
-                    // Throtling read of thre file until the file writer thread signals that output data queue is ready to receive more data
-                    s_signalOutputDataQueueReady.WaitOne();
+                    throw new ArgumentNullException("parameter", "Input compressed file path for File Read thread is null");
+                }
+                String fileName = (String)parameter;
 
-                    // Throttling read of the input file in order to not to drain free memory
-                    // If the read queue lenght is greather than maximum allowed value
-                    Int32 readQueueItemsCount;
-                    lock (s_readQueueLocker)
-                    {
-                        readQueueItemsCount = s_readQueue.Count;
-                    }
-                    if (readQueueItemsCount >= s_maxReadQueueLength)
-                    {
-                        // Until a block of data has been written to the output file
-                        s_signalOutputDataWritten.WaitOne();
+                Int64 bytesRead;
+                Int64 bufferSize;
 
-                        // And re-evaluate this contidition
-                        continue;
-                    }
+                using (FileStream inputStream = new FileStream(fileName, FileMode.Open, FileAccess.Read))
+                {
 
-                    // Calculating read block size
-                    if ((inputStream.Length - inputStream.Position) < s_chunkSize)
-                    {
-                        bufferSize = (Int32)(inputStream.Length - inputStream.Position);
-                    }
-                    else
-                    {
-                        bufferSize = s_chunkSize;
-                    }
+                    Byte[] segmentBuffer = null;
 
-                    if (bufferSize <= 0)
+                    while (inputStream.Position < inputStream.Length)
                     {
-                        // TODO: handle the error
-                        break;
-                    }
+                        // Throtling read of thre file until the file writer thread signals that output data queue is ready to receive more data
+                        s_signalOutputDataQueueReady.WaitOne();
 
-                    Byte[] buffer = new Byte[bufferSize];
-                    bytesRead = inputStream.Read(buffer, 0, buffer.Length);
-                    if (bytesRead <= 0)
-                    {
-                        // Ooops // Reached the end of the file (not required)
-                        // TODO: handle this
-                        break;
-                    }
-
-                    int segmentStartOffset = -1;
-                    for (int i = 0; i < buffer.Length - 2; i++)
-                    {
-                        if (buffer[i] == s_gZipFileSignature[0] &&
-                            buffer[i + 1] == s_gZipFileSignature[1] &&
-                            buffer[i + 2] == s_gZipFileSignature[2])
+                        // Throttling read of the input file in order to not to drain free memory
+                        // If the read queue lenght is greather than maximum allowed value
+                        Int32 readQueueItemsCount;
+                        lock (s_readQueueLocker)
                         {
-                            if (segmentStartOffset < 0)
+                            readQueueItemsCount = s_readQueue.Count;
+                        }
+                        if (readQueueItemsCount >= s_maxReadQueueLength)
+                        {
+                            // Until a block of data has been written to the output file
+                            s_signalOutputDataWritten.WaitOne();
+
+                            // And re-evaluate this contidition
+                            continue;
+                        }
+
+                        // Calculating read block size
+                        if ((inputStream.Length - inputStream.Position) < s_chunkSize)
+                        {
+                            bufferSize = (Int32)(inputStream.Length - inputStream.Position);
+                        }
+                        else
+                        {
+                            bufferSize = s_chunkSize;
+                        }
+
+                        if (bufferSize <= 0)
+                        {
+                            throw new IndexOutOfRangeException("Current position in input stream is beyond the end of the file");
+                        }
+
+                        Byte[] buffer = new Byte[bufferSize];
+                        bytesRead = inputStream.Read(buffer, 0, buffer.Length);
+                        if (bytesRead <= 0)
+                        {
+                            throw new InvalidDataException("An attemp to read from input stream file has returned no data");
+                        }
+
+                        int segmentStartOffset = -1;
+                        for (int i = 0; i < buffer.Length - 2; i++)
+                        {
+                            if (buffer[i] == s_gZipFileSignature[0] &&
+                                buffer[i + 1] == s_gZipFileSignature[1] &&
+                                buffer[i + 2] == s_gZipFileSignature[2])
                             {
-                                segmentStartOffset = i;
+                                if (segmentStartOffset < 0)
+                                {
+                                    segmentStartOffset = i;
 
-                                if (segmentBuffer != null)
-                                {   // adding to existing file buffer
+                                    if (segmentBuffer != null)
+                                    {   // adding to existing file buffer
 
-                                    // Saving current data in file buffer
-                                    Byte[] tmpBuffer = segmentBuffer;
-                                    bufferSize = tmpBuffer.Length + i;
+                                        // Saving current data in file buffer
+                                        Byte[] tmpBuffer = segmentBuffer;
+                                        bufferSize = tmpBuffer.Length + i;
 
-                                    // reallocating file buffer
+                                        // reallocating file buffer
+                                        segmentBuffer = new Byte[bufferSize];
+
+                                        Array.Copy(tmpBuffer, 0, segmentBuffer, 0, tmpBuffer.Length);
+                                        Array.Copy(buffer, 0, segmentBuffer, tmpBuffer.Length, i);
+                                        lock (s_readQueueLocker)
+                                        {
+                                            s_readQueue.Add(s_readSequenceNumber, segmentBuffer);
+                                        }
+
+                                        #region Debug
+                                        /*
+                                        using (FileStream partFile = new FileStream(@"d:\tmp\detected_compressed_part" + s_readSequenceNumber + ".gz", FileMode.Create))
+                                        {
+                                            partFile.Write(segmentBuffer, 0, segmentBuffer.Length);
+                                        }
+                                        */
+                                        #endregion
+
+                                        s_readSequenceNumber++;
+                                        segmentStartOffset = i;
+                                        segmentBuffer = null;
+                                    }
+                                }
+                                else
+                                {
+                                    bufferSize = i - segmentStartOffset;
                                     segmentBuffer = new Byte[bufferSize];
 
-                                    Array.Copy(tmpBuffer, 0, segmentBuffer, 0, tmpBuffer.Length);
-                                    Array.Copy(buffer, 0, segmentBuffer, tmpBuffer.Length, i);
+                                    Array.Copy(buffer, segmentStartOffset, segmentBuffer, 0, bufferSize);
                                     lock (s_readQueueLocker)
                                     {
                                         s_readQueue.Add(s_readSequenceNumber, segmentBuffer);
                                     }
 
-                                    // debug
+                                    #region Debug
                                     /*
                                     using (FileStream partFile = new FileStream(@"d:\tmp\detected_compressed_part" + s_readSequenceNumber + ".gz", FileMode.Create))
                                     {
                                         partFile.Write(segmentBuffer, 0, segmentBuffer.Length);
                                     }
                                     */
+                                    #endregion
 
                                     s_readSequenceNumber++;
                                     segmentStartOffset = i;
                                     segmentBuffer = null;
                                 }
                             }
-                            else
-                            {
-                                bufferSize = i - segmentStartOffset;
-                                segmentBuffer = new Byte[bufferSize];
 
-                                Array.Copy(buffer, segmentStartOffset, segmentBuffer, 0, bufferSize);
-                                lock (s_readQueueLocker)
+                            if (i == buffer.Length - s_gZipFileSignature.Length &&
+                                segmentStartOffset < buffer.Length)
+                            {
+                                if (segmentStartOffset < 0)
                                 {
-                                    s_readQueue.Add(s_readSequenceNumber, segmentBuffer);
+                                    segmentStartOffset = 0;
                                 }
 
-                                // debug
-                                /*
-                                using (FileStream partFile = new FileStream(@"d:\tmp\detected_compressed_part" + s_readSequenceNumber + ".gz", FileMode.Create))
+                                if (segmentBuffer != null)
                                 {
-                                    partFile.Write(segmentBuffer, 0, segmentBuffer.Length);
+                                    // Saving current data in file buffer
+                                    Byte[] tmpBuffer = segmentBuffer;
+                                    bufferSize = tmpBuffer.Length + i + s_gZipFileSignature.Length; // compensating
+
+                                    // reallocating file buffer
+                                    segmentBuffer = new Byte[bufferSize];
+
+                                    Array.Copy(tmpBuffer, 0, segmentBuffer, 0, tmpBuffer.Length);
+                                    Array.Copy(buffer, 0, segmentBuffer, tmpBuffer.Length, i + s_gZipFileSignature.Length);
                                 }
-                                */
-
-                                s_readSequenceNumber++;
-                                segmentStartOffset = i;
-                                segmentBuffer = null;
-                            }
-                        }
-
-                        if (i == buffer.Length - s_gZipFileSignature.Length &&
-                            segmentStartOffset < buffer.Length)
-                        {
-                            if (segmentStartOffset < 0)
-                            {
-                                segmentStartOffset = 0;
-                            }
-
-                            if (segmentBuffer != null)
-                            {
-                                // Saving current data in file buffer
-                                Byte[] tmpBuffer = segmentBuffer;
-                                bufferSize = tmpBuffer.Length + i + s_gZipFileSignature.Length; // compensating
-
-                                // reallocating file buffer
-                                segmentBuffer = new Byte[bufferSize];
-
-                                Array.Copy(tmpBuffer, 0, segmentBuffer, 0, tmpBuffer.Length);
-                                Array.Copy(buffer, 0, segmentBuffer, tmpBuffer.Length, i + s_gZipFileSignature.Length);
-                            }
-                            else
-                            {
-                                bufferSize = buffer.Length - segmentStartOffset;
-                                segmentBuffer = new Byte[bufferSize];
-
-                                Array.Copy(buffer, segmentStartOffset, segmentBuffer, 0, bufferSize);
-                            }
-
-                            if (inputStream.Position >= inputStream.Length)
-                            {
-                                lock (s_readQueueLocker)
+                                else
                                 {
-                                    s_readQueue.Add(s_readSequenceNumber, segmentBuffer);
+                                    bufferSize = buffer.Length - segmentStartOffset;
+                                    segmentBuffer = new Byte[bufferSize];
+
+                                    Array.Copy(buffer, segmentStartOffset, segmentBuffer, 0, bufferSize);
                                 }
 
-                                // debug
-                                /*
-                                using (FileStream partFile = new FileStream(@"d:\tmp\detected_compressed_part" + s_readSequenceNumber + ".gz", FileMode.Create))
+                                if (inputStream.Position >= inputStream.Length)
                                 {
-                                    partFile.Write(segmentBuffer, 0, segmentBuffer.Length);
-                                }
-                                */
+                                    lock (s_readQueueLocker)
+                                    {
+                                        s_readQueue.Add(s_readSequenceNumber, segmentBuffer);
+                                    }
 
-                                s_readSequenceNumber++;
-                                segmentStartOffset = -1;  // doesn't matter, but still
-                                segmentBuffer = null; // doesn't matter, but still
+                                    #region Debug
+                                    /*
+                                    using (FileStream partFile = new FileStream(@"d:\tmp\detected_compressed_part" + s_readSequenceNumber + ".gz", FileMode.Create))
+                                    {
+                                        partFile.Write(segmentBuffer, 0, segmentBuffer.Length);
+                                    }
+                                    */
+                                    #endregion
+
+                                    s_readSequenceNumber++;
+                                    segmentStartOffset = -1;  // doesn't matter, but still
+                                    segmentBuffer = null; // doesn't matter, but still
+                                }
                             }
                         }
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                s_isEmergencyShutdown = true;
+                s_emergencyShutdownMessage = String.Format("An unhandled exception in Compressed File Read thread caused the process to stop: {0}", ex.Message);
             }
 
             s_isInputFileRead = true;
@@ -406,103 +431,117 @@ namespace GZipTest
         // Universal (compressed and decompressed) file write function (threaded)
         private static void FileWriteThread(object parameter)
         {
-            String fileName = (String)parameter;
-
             s_isOutputFileWritten = false;
 
-            using (FileStream outputStream = new FileStream(fileName, FileMode.Create))
+            try
             {
-                // Initial command to file read thread to start reading
-                s_signalOutputDataQueueReady.Set();
-
-                while (!s_isOutputFileWritten) // Don't required, but it's a good fail-safe measure
+                if (parameter == null)
                 {
-                    // Checking if there's any date in output queue
-                    Int32 writeQueueItemsCount = 0;
-                    lock (s_writeQueueLocker)
-                    {
-                        writeQueueItemsCount = s_writeQueue.Count;
-                    }
+                    throw new ArgumentNullException("parameter", "Output file path for File Write thread is null");
+                }
 
-                    // Suspend the thread until there's no data to write to the output file
-                    if (writeQueueItemsCount <= 0)
-                    {
-                        if (s_isDataProcessingDone)
-                        {
-                            s_isOutputFileWritten = true;
-                            break;
-                        }                        
-                    }
+                String fileName = (String)parameter;
 
-                    // Checking if there's a block of output data with the same sequence number as the write sequence number
-                    Boolean isContainsWriteSequenceNumber = false;
-                    lock (s_writeQueueLocker)
+                using (FileStream outputStream = new FileStream(fileName, FileMode.Create))
+                {
+                    // Initial command to file read thread to start reading
+                    s_signalOutputDataQueueReady.Set();
+
+                    while (!s_isOutputFileWritten) // Don't required, but it's a good fail-safe measure
                     {
-                        isContainsWriteSequenceNumber = s_writeQueue.ContainsKey(s_writeSequenceNumber);
-                    }
-                    if (!isContainsWriteSequenceNumber)
-                    {
-                        // If there's no block with correct write sequence number the the queue, wait for the next block and go round the loop
-                        //s_signalWorkerThreadReady.WaitOne();
-                        //lock (s_workerThreadReadySignalLocker)
-                        //{
-                        //    s_signalWorkerThreadReady.Reset();
-                        //}
-                    }
-                    else
-                    {
-                        // If there is a block with correct write sequence number, write it to the output file
-                        byte[] buffer;
+                        // Checking if there's any date in output queue
+                        Int32 writeQueueItemsCount = 0;
                         lock (s_writeQueueLocker)
                         {
-                            buffer = s_writeQueue[s_writeSequenceNumber];
-                            s_writeQueue.Remove(s_writeSequenceNumber);
+                            writeQueueItemsCount = s_writeQueue.Count;
+                        }
 
-                            if (s_writeQueue.Count > s_maxWriteQueueLength)
+                        // Suspend the thread until there's no data to write to the output file
+                        if (writeQueueItemsCount <= 0)
+                        {
+                            if (s_isDataProcessingDone)
                             {
-                                s_signalOutputDataQueueReady.Reset();
-                            }
-                            else
-                            {
-                                s_signalOutputDataQueueReady.Set();
+                                s_isOutputFileWritten = true;
+                                break;
                             }
                         }
 
-                        outputStream.Write(buffer, 0, buffer.Length);
-
-                        #region Debug
-                        /*
-                        switch (s_compressionMode)
+                        // Checking if there's a block of output data with the same sequence number as the write sequence number
+                        Boolean isContainsWriteSequenceNumber = false;
+                        lock (s_writeQueueLocker)
                         {
-                            case CompressionMode.Compress:
-                                using (FileStream partFile = new FileStream(@"e:\tmp\compressed_part" + s_writeSequenceNumber + ".gz", FileMode.Create))
-                                {
-                                    partFile.Write(buffer, 0, buffer.Length);
-                                }
-                                break;
-
-                            case CompressionMode.Decompress:
-                                using (FileStream partFile = new FileStream(@"e:\tmp\decompressed_part" + s_writeSequenceNumber + ".bin", FileMode.Create))
-                                {
-                                    partFile.Write(buffer, 0, buffer.Length);
-                                }
-                                break;
-
-                            default:
-                                break;
-                        }*/
-                        #endregion
-
-                        lock (s_writeSequenceNumberLocker)
+                            isContainsWriteSequenceNumber = s_writeQueue.ContainsKey(s_writeSequenceNumber);
+                        }
+                        if (!isContainsWriteSequenceNumber)
                         {
-                            s_writeSequenceNumber++;
+                            // TODO: fix this
+                            // If there's no block with correct write sequence number the the queue, wait for the next block and go round the loop
+                            //s_signalWorkerThreadReady.WaitOne();
+                            //lock (s_workerThreadReadySignalLocker)
+                            //{
+                            //    s_signalWorkerThreadReady.Reset();
+                            //}
+                        }
+                        else
+                        {
+                            // If there is a block with correct write sequence number, write it to the output file
+                            byte[] buffer;
+                            lock (s_writeQueueLocker)
+                            {
+                                buffer = s_writeQueue[s_writeSequenceNumber];
+                                s_writeQueue.Remove(s_writeSequenceNumber);
+
+                                if (s_writeQueue.Count > s_maxWriteQueueLength)
+                                {
+                                    s_signalOutputDataQueueReady.Reset();
+                                }
+                                else
+                                {
+                                    s_signalOutputDataQueueReady.Set();
+                                }
+                            }
+
+                            outputStream.Write(buffer, 0, buffer.Length);
+
+                            #region Debug
+                            /*
+                            switch (s_compressionMode)
+                            {
+                                case CompressionMode.Compress:
+                                    using (FileStream partFile = new FileStream(@"e:\tmp\compressed_part" + s_writeSequenceNumber + ".gz", FileMode.Create))
+                                    {
+                                        partFile.Write(buffer, 0, buffer.Length);
+                                    }
+                                    break;
+
+                                case CompressionMode.Decompress:
+                                    using (FileStream partFile = new FileStream(@"e:\tmp\decompressed_part" + s_writeSequenceNumber + ".bin", FileMode.Create))
+                                    {
+                                        partFile.Write(buffer, 0, buffer.Length);
+                                    }
+                                    break;
+
+                                default:
+                                    break;
+                            }*/
+                            #endregion
+
+                            lock (s_writeSequenceNumberLocker)
+                            {
+                                s_writeSequenceNumber++;
+                            }
+
+                            s_signalOutputDataWritten.Set();
                         }
 
-                        s_signalOutputDataWritten.Set();
+                        Thread.Sleep(1000);
                     }
-
-                    Thread.Sleep(1000);
                 }
+            }
+            catch (Exception ex)
+            {
+                s_isEmergencyShutdown = true;
+                s_emergencyShutdownMessage = String.Format("An unhandled exception in File Write thread caused the process to stop: {0}", ex.Message);
             }
         }
 
@@ -518,6 +557,11 @@ namespace GZipTest
 
             try
             {
+                if (parameter == null)
+                {
+                    throw new ArgumentNullException("parameter", "Thread sequence number for Block Compression thread is null");
+                }
+
                 Int64 threadSequenceNumber = (Int64)parameter;    
 
                 lock (s_readQueueLocker)
@@ -526,19 +570,35 @@ namespace GZipTest
                     s_readQueue.Remove(threadSequenceNumber);
                 }
 
-                using (MemoryStream outputStream = new MemoryStream(buffer.Length))
+                // Retry memory allocation flag in case of memory shortage exception
+                Boolean isRetryMemoryAllocation = false;
+                do
                 {
-                    using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
+                    try
                     {
-                        compressionStream.Write(buffer, 0, buffer.Length);
-                        buffer = null;
-                    }
+                        using (MemoryStream outputStream = new MemoryStream(buffer.Length))
+                        {
+                            using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
+                            {
+                                compressionStream.Write(buffer, 0, buffer.Length);
+                                buffer = null;
+                            }
 
-                    lock (s_writeQueueLocker)
-                    {
-                        s_writeQueue.Add(threadSequenceNumber, outputStream.ToArray());
+                            lock (s_writeQueueLocker)
+                            {
+                                s_writeQueue.Add(threadSequenceNumber, outputStream.ToArray());
+                            }
+                        }
                     }
-                }
+                    catch (OutOfMemoryException)
+                    {
+                        isRetryMemoryAllocation = true;
+                        Thread.Sleep(10000); // TODO: replace with a signal from another thread
+
+                    }
+                } while (isRetryMemoryAllocation);
+                
+                
             }
             catch (ThreadAbortException)
             {
@@ -548,46 +608,84 @@ namespace GZipTest
             catch (Exception ex)
             {
                 s_isEmergencyShutdown = true;
-                s_emergencyShutdownMessage = String.Format("An unhandled exeption in block compression thread caused the process to stop: {0}", ex.Message);
+                s_emergencyShutdownMessage = String.Format("An unhandled exception in Block Compression thread caused the process to stop: {0}", ex.Message);
             }
         }
 
         // Threaded decompression function
         private static void BlockDecompressionThread(object parameter)
         {
-            Int64 threadSequenceNumber = (Int64)parameter;
             byte[] buffer;
 
-            lock (s_readQueueLocker)
+            if (s_isEmergencyShutdown)
             {
-                buffer = s_readQueue[threadSequenceNumber];
-                s_readQueue.Remove(threadSequenceNumber);
+                return;
             }
 
-            using (MemoryStream inputStream = new MemoryStream(buffer))
+            try
             {
-                int bytesRead;
-                Byte[] outputBuffer = new Byte[s_chunkSize];
-
-                using (GZipStream gZipStream = new GZipStream(inputStream, CompressionMode.Decompress))
+                if (parameter == null)
                 {
-                    bytesRead = gZipStream.Read(outputBuffer, 0, s_chunkSize);
+                    throw new ArgumentNullException("parameter", "Thread sequence number for Block Decompression thread is null");
                 }
 
-                Byte[] decompressedData = new Byte[bytesRead];
-                Array.Copy(outputBuffer, decompressedData, decompressedData.Length);
-                outputBuffer = null;
+                Int64 threadSequenceNumber = (Int64)parameter;
 
-                lock (s_writeQueueLocker)
+                lock (s_readQueueLocker)
                 {
-                    s_writeQueue.Add(threadSequenceNumber, decompressedData);
+                    buffer = s_readQueue[threadSequenceNumber];
+                    s_readQueue.Remove(threadSequenceNumber);
                 }
-                decompressedData = null;
+
+                // Retry memory allocation flag in case of memory shortage exception
+                Boolean isRetryMemoryAllocation = false;
+                do
+                {
+                    try
+                    {
+                        using (MemoryStream inputStream = new MemoryStream(buffer))
+                        {
+                            int bytesRead;
+                            Byte[] outputBuffer = new Byte[s_chunkSize];
+
+                            using (GZipStream gZipStream = new GZipStream(inputStream, CompressionMode.Decompress))
+                            {
+                                bytesRead = gZipStream.Read(outputBuffer, 0, s_chunkSize);
+                            }
+
+                            Byte[] decompressedData = new Byte[bytesRead];
+                            Array.Copy(outputBuffer, decompressedData, decompressedData.Length);
+                            outputBuffer = null;
+
+                            lock (s_writeQueueLocker)
+                            {
+                                s_writeQueue.Add(threadSequenceNumber, decompressedData);
+                            }
+                            decompressedData = null;
+                        }
+                    }
+                    catch (OutOfMemoryException)
+                    {
+                        isRetryMemoryAllocation = true;
+                        Thread.Sleep(10000); // TODO: replace with a signal from another thread
+                    }
+                } while (isRetryMemoryAllocation);
+            }
+
+            catch (ThreadAbortException)
+            {
+                // No need to spoil probably existing emergency shutdown message
+                s_isEmergencyShutdown = true;
+            }
+            catch (Exception ex)
+            {
+                s_isEmergencyShutdown = true;
+                s_emergencyShutdownMessage = String.Format("An unhandled exception in Block Decompression thread caused the process to stop: {0}", ex.Message);
             }
         }
 
         // Threaded threads dispatcher that starts worker threads and limits their number
-        private static void WorkerThreadsDispatcherThread(object parameter)
+        private static void WorkerThreadsDispatcherThread()
         {
             if (s_isEmergencyShutdown == true)
             {
@@ -597,7 +695,6 @@ namespace GZipTest
             Int32 readQueueCount = 0;
             try
             {
-
                 do
                 {
                     // Killing all running threads is emergency shutdown is requested
@@ -684,7 +781,7 @@ namespace GZipTest
                     else
                     {
                         // If the limit of running worker thread is reached
-                        // Stop spawning new threads and wait for the running onse to finish
+                        // Stop spawning new threads and wait for the running ones to finish
                         Thread.Sleep(1000);
                     }
 
@@ -701,7 +798,7 @@ namespace GZipTest
             catch (Exception ex)
             {
                 s_isEmergencyShutdown = true;
-                s_emergencyShutdownMessage = String.Format("An unhandled exeption in Worker Threads Dispatcher thread caused the process to stop: {0}", ex.Message);
+                s_emergencyShutdownMessage = String.Format("An unhandled exception in Worker Threads Dispatcher thread caused the process to stop: {0}", ex.Message);
             }
 
             s_isDataProcessingDone = true;
@@ -738,52 +835,67 @@ namespace GZipTest
             catch (Exception ex)
             {
                 s_isEmergencyShutdown = true;
-                s_emergencyShutdownMessage = String.Format("An unhandled exeption during compression module initialization caused the process to stop: {0}", ex.Message);
+                s_emergencyShutdownMessage = String.Format("An unhandled exception during compression module initialization caused the process to stop: {0}", ex.Message);
             }
         }
 
         // Execute main compression / decompression logic
         public static void Run(String inputFilePath, String outputFilePath)
         {
-            Initialize();
-
-            // Starting compression threads manager thread
-            Thread workerThreadsManagerThread = new Thread(WorkerThreadsDispatcherThread);
-            workerThreadsManagerThread.Name = "Worker threads manager";
-            workerThreadsManagerThread.Start(null);
-
-            // Initializing input file read thread
-            Thread inputFileReadThread = null;
-            switch (s_compressionMode)
+            try
             {
-                case CompressionMode.Compress:
-                    // Starting file reader thread
-                    inputFileReadThread = new Thread(FileReadUncompressedThread);
-                    inputFileReadThread.Name = "Read uncompressed input file";
-                    break;
+                Initialize();
 
-                case CompressionMode.Decompress:
-                    // Starting file reader thread
-                    inputFileReadThread = new Thread(FileReadCompressedThread);
-                    inputFileReadThread.Name = "Read compressed input file";
-                    break;
+                if (s_isEmergencyShutdown)
+                {
+                    return;
+                }
 
-                default:
-                    // TODO: handle the error
-                    break;
+                // Starting compression threads manager thread
+                // TODO: make a global variable to be able to kill all threads on error
+                Thread workerThreadsManagerThread = new Thread(WorkerThreadsDispatcherThread);
+                workerThreadsManagerThread.Name = "Worker threads manager";
+                workerThreadsManagerThread.Start();
+
+                // Initializing input file read thread
+                // TODO: make a global variable to be able to kill all threads on error
+                Thread inputFileReadThread = null;
+                switch (s_compressionMode)
+                {
+                    case CompressionMode.Compress:
+                        // Starting file reader thread
+                        inputFileReadThread = new Thread(FileReadUncompressedThread);
+                        inputFileReadThread.Name = "Read uncompressed input file";
+                        break;
+
+                    case CompressionMode.Decompress:
+                        // Starting file reader thread
+                        inputFileReadThread = new Thread(FileReadCompressedThread);
+                        inputFileReadThread.Name = "Read compressed input file";
+                        break;
+
+                    default:
+                        throw new Exception("Unknown operations mode is specified");
+                }
+
+                // Starting previously initialized input file read thread
+                inputFileReadThread.Start(inputFilePath);
+
+                // Starting compressed file write thread
+                // TODO: make a global variable to be able to kill all threads on error
+                Thread outputFileWriteThread = new Thread(FileWriteThread);
+                outputFileWriteThread.Name = "Write output file";
+                outputFileWriteThread.Start(outputFilePath);
+
+                inputFileReadThread.Join();
+                outputFileWriteThread.Join();
+                workerThreadsManagerThread.Join();
             }
-
-            // Starting previously initialized input file read thread
-            inputFileReadThread.Start(inputFilePath);
-
-            // Starting compressed file write thread
-            Thread outputFileWriteThread = new Thread(FileWriteThread);
-            outputFileWriteThread.Name = "Write output file";
-            outputFileWriteThread.Start(outputFilePath);
-
-            inputFileReadThread.Join();
-            outputFileWriteThread.Join();
-            workerThreadsManagerThread.Join();
+            catch (Exception ex)
+            {
+                s_isEmergencyShutdown = true;
+                s_emergencyShutdownMessage = String.Format("An unhandled exception in compression method caused the process to stop: {0}", ex.Message);
+            }
         }
 
         // Execute main compression / decompression logic
@@ -911,6 +1023,8 @@ namespace GZipTest
             // Starting compression
             Console.WriteLine("Working...");
             CGZipCompressor.Run(inputFilePath, outputFilePath);
+
+            // TODO: check results, print error message (if present) and return the appropriate exit code
 
             Console.WriteLine("Press ENTER to exit...");
             Console.ReadLine();
