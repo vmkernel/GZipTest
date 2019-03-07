@@ -36,6 +36,12 @@ namespace GZipTest
         // First three bytes of a GZip file (compressed block) signature
         private static readonly Byte[] s_gZipFileSignature = new Byte[] { 0x1F, 0x8B, 0x08 };
 
+        // Emergency shutdown flag
+        private static Boolean s_isEmergencyShutdown;
+
+        // Emergency shutdown message
+        private static String s_emergencyShutdownMessage;
+
         #region Threads
         // Threads pool
         private static Dictionary<Int64, Thread> s_workerThreads;
@@ -124,79 +130,96 @@ namespace GZipTest
         // File to compress read function (threaded)
         private static void FileReadUncompressedThread(object parameter)
         {
-            String fileName = (String)parameter;
             s_isInputFileRead = false;
 
-            using (FileStream inputStream = new FileStream(fileName, FileMode.Open, FileAccess.Read))
+            if (s_isEmergencyShutdown)
             {
-                Int64 bytesRead;
-                Int64 bufferSize;
-
-                while (inputStream.Position < inputStream.Length)
-                {
-                    // Throtling read of thre file until the file writer thread signals that output data queue is ready to receive more data
-                    s_signalOutputDataQueueReady.WaitOne();
-
-                    // Throttling read of the input file in order to not to drain free memory
-                    // If the read queue lenght is greather than maximum allowed value
-                    Int32 readQueueItemsCount;
-                    lock (s_readQueueLocker)
-                    {
-                        readQueueItemsCount = s_readQueue.Count;
-                    }
-                    if (readQueueItemsCount >= s_maxReadQueueLength)
-                    {
-                        // Until a block of data has been written to the output file
-                        s_signalOutputDataWritten.WaitOne();
-                        
-                        // And re-evaluate this contidition
-                        continue;
-                    }
-
-                    // Calculating read block size
-                    if ((inputStream.Length - inputStream.Position) < s_chunkSize)
-                    {
-                        bufferSize = (Int32)(inputStream.Length - inputStream.Position);
-                    }
-                    else
-                    {
-                        bufferSize = s_chunkSize;
-                    }
-
-                    if (bufferSize <= 0)
-                    {
-                        // TODO: handle the error
-                        break;
-                    }
-
-                    // Allocating read buffer and reading a block from the file
-                    Byte[] buffer = new Byte[bufferSize];
-                    bytesRead = inputStream.Read(buffer, 0, buffer.Length);
-                    if (bytesRead <= 0)
-                    {
-                        // TODO: handle this
-                        break; // Reached the end of the file (not required)
-                    }
-
-                    lock (s_readQueueLocker)
-                    {
-                        s_readQueue.Add(s_readSequenceNumber, buffer);
-                    }
-
-                    #region Debug
-                    /*
-                    using (FileStream partFile = new FileStream(@"d:\tmp\input_part"+s_readSequenceNumber+".bin", FileMode.Create))
-                    {
-                        partFile.Write(buffer, 0, buffer.Length);
-                    }
-                    */
-                    #endregion
-
-                    s_readSequenceNumber++;
-                }
-
-                s_isInputFileRead = true;
+                return;
             }
+
+            try
+            {
+                if (parameter == null)
+                {
+                    throw new ArgumentNullException("parameter", "Input uncomression file path for file read threadn is null");
+                }
+                String fileName = (String)parameter;    
+
+                using (FileStream inputStream = new FileStream(fileName, FileMode.Open, FileAccess.Read))
+                {
+                    Int64 bytesRead;
+                    Int64 bufferSize;
+
+                    while (inputStream.Position < inputStream.Length)
+                    {
+                        // Throtling read of thre file until the file writer thread signals that output data queue is ready to receive more data
+                        s_signalOutputDataQueueReady.WaitOne();
+
+                        // Throttling read of the input file in order to not to drain free memory
+                        // If the read queue lenght is greather than maximum allowed value
+                        Int32 readQueueItemsCount;
+                        lock (s_readQueueLocker)
+                        {
+                            readQueueItemsCount = s_readQueue.Count;
+                        }
+                        if (readQueueItemsCount >= s_maxReadQueueLength)
+                        {
+                            // Until a block of data has been written to the output file
+                            s_signalOutputDataWritten.WaitOne();
+
+                            // And re-evaluate this contidition
+                            continue;
+                        }
+
+                        // Calculating read block size
+                        if ((inputStream.Length - inputStream.Position) < s_chunkSize)
+                        {
+                            bufferSize = (Int32)(inputStream.Length - inputStream.Position);
+                        }
+                        else
+                        {
+                            bufferSize = s_chunkSize;
+                        }
+
+                        // Is block size correct?
+                        if (bufferSize <= 0)
+                        {
+                            throw new IndexOutOfRangeException("Current position in input stream is beyond the end of the file");
+                        }
+
+                        // Allocating read buffer and reading a block from the file
+                        Byte[] buffer = new Byte[bufferSize];
+                        bytesRead = inputStream.Read(buffer, 0, buffer.Length);
+                        if (bytesRead <= 0)
+                        {
+                            throw new InvalidDataException("An attemp to read from input stream file has returned no data");
+                        }
+
+                        lock (s_readQueueLocker)
+                        {
+                            s_readQueue.Add(s_readSequenceNumber, buffer);
+                        }
+
+                        #region Debug
+                        /*
+                        using (FileStream partFile = new FileStream(@"d:\tmp\input_part"+s_readSequenceNumber+".bin", FileMode.Create))
+                        {
+                            partFile.Write(buffer, 0, buffer.Length);
+                        }
+                        */
+                        #endregion
+
+                        s_readSequenceNumber++;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                s_isEmergencyShutdown = true;
+                s_emergencyShutdownMessage = String.Format("An unhandled exeption in uncompressed file read thread caused the process to stop: {0}", ex.Message);
+            }
+
+            s_isInputFileRead = true;
         }
 
         // File to decompress read function (threaded)
@@ -486,27 +509,46 @@ namespace GZipTest
         // Threaded compression function
         private static void BlockCompressionThread(object parameter)
         {
-            Int64 threadSequenceNumber = (Int64)parameter;
             byte[] buffer;
 
-            lock (s_readQueueLocker)
+            if (s_isEmergencyShutdown)
             {
-                buffer = s_readQueue[threadSequenceNumber];
-                s_readQueue.Remove(threadSequenceNumber);
+                return;
             }
 
-            using (MemoryStream outputStream = new MemoryStream(buffer.Length))
+            try
             {
-                using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
+                Int64 threadSequenceNumber = (Int64)parameter;    
+
+                lock (s_readQueueLocker)
                 {
-                    compressionStream.Write(buffer, 0, buffer.Length);
-                    buffer = null;
+                    buffer = s_readQueue[threadSequenceNumber];
+                    s_readQueue.Remove(threadSequenceNumber);
                 }
 
-                lock (s_writeQueueLocker)
+                using (MemoryStream outputStream = new MemoryStream(buffer.Length))
                 {
-                    s_writeQueue.Add(threadSequenceNumber, outputStream.ToArray());
+                    using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
+                    {
+                        compressionStream.Write(buffer, 0, buffer.Length);
+                        buffer = null;
+                    }
+
+                    lock (s_writeQueueLocker)
+                    {
+                        s_writeQueue.Add(threadSequenceNumber, outputStream.ToArray());
+                    }
                 }
+            }
+            catch (ThreadAbortException)
+            {
+                // No need to spoil probably existing emergency shutdown message
+                s_isEmergencyShutdown = true;
+            }
+            catch (Exception ex)
+            {
+                s_isEmergencyShutdown = true;
+                s_emergencyShutdownMessage = String.Format("An unhandled exeption in block compression thread caused the process to stop: {0}", ex.Message);
             }
         }
 
@@ -545,84 +587,122 @@ namespace GZipTest
         }
 
         // Threaded threads dispatcher that starts worker threads and limits their number
-        private static void WorkerThreadsDispatcher(object parameter)
+        private static void WorkerThreadsDispatcherThread(object parameter)
         {
-            Int32 readQueueCount = 0;
-            do
+            if (s_isEmergencyShutdown == true)
             {
-                // Looking for finished threads
-                if (s_workerThreads.Count > 0)
+                return;
+            }
+
+            Int32 readQueueCount = 0;
+            try
+            {
+
+                do
                 {
-                    List<Int32> finishedThreads = new List<Int32>();
-                    foreach (Int32 threadSequenceNumber in s_workerThreads.Keys)
+                    // Killing all running threads is emergency shutdown is requested
+                    if (s_isEmergencyShutdown == true)
                     {
-                        if (s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Stopped ||
-                            s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Aborted)
+                        if (s_workerThreads.Count > 0)
                         {
-                            finishedThreads.Add(threadSequenceNumber);
+                            foreach (Int32 threadSequenceNumber in s_workerThreads.Keys)
+                            {
+                                if (s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Background ||
+                                    s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Running ||
+                                    s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Suspended ||
+                                    s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.WaitSleepJoin)
+                                {
+                                    s_workerThreads[threadSequenceNumber].Abort();
+                                }
+                            }
+                        }
+
+                        return;
+                    }
+
+                    // Looking for finished threads
+                    // TODO: Implement a property with initialization if null
+                    if (s_workerThreads.Count > 0)
+                    {
+                        List<Int32> finishedThreads = new List<Int32>();
+                        foreach (Int32 threadSequenceNumber in s_workerThreads.Keys)
+                        {
+                            if (s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Stopped ||
+                                s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Aborted)
+                            {
+                                finishedThreads.Add(threadSequenceNumber);
+                            }
+                        }
+
+                        // If any finished threads has been found
+                        foreach (Int32 threadSequenceNumber in finishedThreads)
+                        {
+                            // Removing all of them
+                            s_workerThreads.Remove(threadSequenceNumber);
                         }
                     }
 
-                    // If any finished threads has been found
-                    foreach (Int32 threadSequenceNumber in finishedThreads)
+                    // If there's less than maximum allowed threads are running, spawn a new one                    
+                    if (s_workerThreads.Count < s_maxThreadsCount)
                     {
-                        // Removing all of them
-                        s_workerThreads.Remove(threadSequenceNumber);
-                    }
-                }
-
-                // If there's less than maximum allowed threads are running, spawn a new one                    
-                if (s_workerThreads.Count < s_maxThreadsCount)
-                {
-                    // Spawning a new thread
-                    lock (s_readQueueLocker)
-                    {
-                        foreach (Int64 threadSequenceNumber in s_readQueue.Keys)
+                        // Spawning a new thread
+                        lock (s_readQueueLocker)
                         {
-                            if (!s_workerThreads.ContainsKey(threadSequenceNumber))
+                            foreach (Int64 threadSequenceNumber in s_readQueue.Keys)
                             {
-                                // Spawn a corresponding thread according to the selected operations mode
-                                Thread workerThread = null;
-                                switch (s_compressionMode)
+                                if (!s_workerThreads.ContainsKey(threadSequenceNumber))
                                 {
-                                    case CompressionMode.Compress:
-                                        workerThread = new Thread(BlockCompressionThread);
-                                        break;
+                                    // Spawn a corresponding thread according to the selected operations mode
+                                    Thread workerThread = null;
+                                    switch (s_compressionMode)
+                                    {
+                                        case CompressionMode.Compress:
+                                            workerThread = new Thread(BlockCompressionThread);
+                                            break;
 
-                                    case CompressionMode.Decompress:
-                                        workerThread = new Thread(BlockDecompressionThread);
-                                        break;
+                                        case CompressionMode.Decompress:
+                                            workerThread = new Thread(BlockDecompressionThread);
+                                            break;
 
-                                    default:
-                                        // TODO: handle the error
-                                        break;
+                                        default:
+                                            throw new Exception("Unknown operations mode is specified");
+                                    }
+
+                                    if (workerThread == null)
+                                    {
+                                        throw new NullReferenceException("Unable to create a block compression/decompression thread");
+                                    }
+
+                                    workerThread.Name = String.Format("Data processing (seq: {0})", threadSequenceNumber);
+                                    s_workerThreads.Add(threadSequenceNumber, workerThread);
+                                    s_workerThreads[threadSequenceNumber].Start(threadSequenceNumber);
+                                    break;
                                 }
-                                // TODO: check workerThread != null
-
-                                workerThread.Name = String.Format("Data processing (seq: {0})", threadSequenceNumber);
-                                s_workerThreads.Add(threadSequenceNumber, workerThread);
-                                s_workerThreads[threadSequenceNumber].Start(threadSequenceNumber);
-                                break;
                             }
                         }
                     }
-                }
-                else 
-                {
-                    // If the limit of running worker thread is reached
-                    // Stop spawning new threads and wait for the running onse to finish
-                    Thread.Sleep(1000);
-                }
+                    else
+                    {
+                        // If the limit of running worker thread is reached
+                        // Stop spawning new threads and wait for the running onse to finish
+                        Thread.Sleep(1000);
+                    }
 
-                // Check if there's any block of data in the file read queue
-                lock (s_readQueueLocker)
-                {
-                    readQueueCount = s_readQueue.Count;
-                }
+                    // Check if there's any block of data in the file read queue
+                    lock (s_readQueueLocker)
+                    {
+                        readQueueCount = s_readQueue.Count;
+                    }
 
-            } while (!s_isInputFileRead ||
-                     s_workerThreads.Count > 0 ||
-                     readQueueCount > 0);
+                } while (!s_isInputFileRead ||
+                         s_workerThreads.Count > 0 ||
+                         readQueueCount > 0);    
+            }
+            catch (Exception ex)
+            {
+                s_isEmergencyShutdown = true;
+                s_emergencyShutdownMessage = String.Format("An unhandled exeption in Worker Threads Dispatcher thread caused the process to stop: {0}", ex.Message);
+            }
 
             s_isDataProcessingDone = true;
         }
@@ -632,20 +712,34 @@ namespace GZipTest
         // Initialize internal variables
         private static void Initialize()
         {
-            // Initializing variables
-            s_workerThreads = new Dictionary<Int64, Thread>();
-            s_readQueue = new Dictionary<Int64, Byte[]>();
-            s_writeQueue = new Dictionary<Int64, Byte[]>();
-            s_isInputFileRead = false;
-            s_isDataProcessingDone = false;
-            s_isOutputFileWritten = false;
+            if (s_isEmergencyShutdown)
+            {
+                return;
+            }
 
-            // Resetting sequence numbers
-            s_readSequenceNumber = 0;
-            s_writeSequenceNumber = 0;
+            try
+            {
+                // Initializing variables
+                s_workerThreads = new Dictionary<Int64, Thread>();
+                s_readQueue = new Dictionary<Int64, Byte[]>();
+                s_writeQueue = new Dictionary<Int64, Byte[]>();
+                s_isInputFileRead = false;
+                s_isDataProcessingDone = false;
+                s_isOutputFileWritten = false;
+                s_isEmergencyShutdown = false;
 
-            // Evaluating maximum threads count
-            s_maxThreadsCount = Environment.ProcessorCount - s_maxThreadsSubtraction;
+                // Resetting sequence numbers
+                s_readSequenceNumber = 0;
+                s_writeSequenceNumber = 0;
+
+                // Evaluating maximum threads count
+                s_maxThreadsCount = Environment.ProcessorCount - s_maxThreadsSubtraction;
+            }
+            catch (Exception ex)
+            {
+                s_isEmergencyShutdown = true;
+                s_emergencyShutdownMessage = String.Format("An unhandled exeption during compression module initialization caused the process to stop: {0}", ex.Message);
+            }
         }
 
         // Execute main compression / decompression logic
@@ -654,7 +748,7 @@ namespace GZipTest
             Initialize();
 
             // Starting compression threads manager thread
-            Thread workerThreadsManagerThread = new Thread(WorkerThreadsDispatcher);
+            Thread workerThreadsManagerThread = new Thread(WorkerThreadsDispatcherThread);
             workerThreadsManagerThread.Name = "Worker threads manager";
             workerThreadsManagerThread.Start(null);
 
@@ -743,7 +837,7 @@ namespace GZipTest
                 // If less or more than 3 arguments are specefied, print an error message
                 String message = String.Format("\nERROR: Incorrect number of parameters (expected: 3, got {0})\n", args.Length);
                 Console.WriteLine(message);
-                Console.WriteLine("Press any key to exit...");
+                Console.WriteLine("Press ENTER to exit...");
                 Console.ReadLine();
 
                 return 1;
@@ -768,7 +862,7 @@ namespace GZipTest
                 // Unknown mode is spceified
                 String message = String.Format("\nERROR: Incorrect mode specified (expected: \"compress\" or \"decompress\" or \"help\", got \"{0}\")\n", mode);
                 Console.WriteLine(message);
-                Console.WriteLine("Press any key to exit...");
+                Console.WriteLine("Press ENTER to exit...");
                 Console.ReadLine();
 
                 return 1;
@@ -781,7 +875,7 @@ namespace GZipTest
                 // Input file must exists
                 String message = String.Format("\nERROR: Can't find the specified input file \"{0}\"\n", inputFilePath);
                 Console.WriteLine(message);
-                Console.WriteLine("Press any key to exit...");
+                Console.WriteLine("Press ENTER to exit...");
                 Console.ReadLine();
 
                 return 1;
@@ -793,7 +887,7 @@ namespace GZipTest
                 // Output file mustn't exists
                 String message = String.Format("\nERROR: The specified output file is already exists: \"{0}\"\n", outputFilePath);
                 Console.WriteLine(message);
-                Console.WriteLine("Press any key to exit...");
+                Console.WriteLine("Press ENTER to exit...");
                 Console.ReadLine();
 
                 return 1;
@@ -818,7 +912,7 @@ namespace GZipTest
             Console.WriteLine("Working...");
             CGZipCompressor.Run(inputFilePath, outputFilePath);
 
-            Console.WriteLine("Press any key to exit...");
+            Console.WriteLine("Press ENTER to exit...");
             Console.ReadLine();
 
             return 0;
