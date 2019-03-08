@@ -36,6 +36,7 @@ namespace GZipTest
         // First three bytes of a GZip file (compressed block) signature
         private static readonly Byte[] s_gZipFileSignature = new Byte[] { 0x1F, 0x8B, 0x08 };
 
+        #region Emergency shutdown
         // Emergency shutdown flag
         private static Boolean s_isEmergencyShutdown;
         public static Boolean IsEmergencyShutdown
@@ -60,10 +61,39 @@ namespace GZipTest
                 return s_emergencyShutdownMessage;
             }
         }
+        #endregion
 
         #region Threads
         // Threads pool
         private static Dictionary<Int64, Thread> s_workerThreads;
+        private static Dictionary<Int64, Thread> WorkerThreads
+        {
+            get
+            {
+                if (s_workerThreads == null)
+                {
+                    s_workerThreads = new Dictionary<Int64, Thread>();
+                }
+                return s_workerThreads;
+            }
+
+            set
+            {
+                if (s_workerThreads == null)
+                {
+                    s_workerThreads = new Dictionary<Int64, Thread>();
+                }
+                if (value == null)
+                {
+                    s_workerThreads.Clear();
+                }
+                else
+                {
+                    s_workerThreads = value;
+                }
+            }
+        }
+
         // Threads pool locker
         private static readonly Object s_workerThreadsLocker = new Object();
 
@@ -81,18 +111,76 @@ namespace GZipTest
         private static readonly Object s_writeSequenceNumberLocker = new Object();
         #endregion
 
-        #region Read/write queues
-        // Input data queue
+        #region Queues
+        #region Read queue
         // Stores blocks that has been read from the input file until they are picked up by Worker threads
         private static Dictionary<Int64, Byte[]> s_readQueue;
+        private static Dictionary<Int64, Byte[]> ReadQueue
+        {
+            get
+            {
+                if (s_readQueue == null)
+                {
+                    s_readQueue = new Dictionary<Int64, Byte[]>();
+                }
+                return s_readQueue;
+            }
+
+            set
+            {
+                if (s_readQueue == null)
+                {
+                    s_readQueue = new Dictionary<Int64, Byte[]>();
+                }
+                if (value == null)
+                {
+                    s_readQueue.Clear();
+                }
+                else
+                {
+                    s_readQueue = value;
+                }
+            }
+        }
+
         // Read queue lock object
         private static readonly Object s_readQueueLocker = new Object();
+        #endregion
 
-        // Output data queue
+        #region Write queue
         // Stores processed (compressed/decompressed) blocks which are produced by Worker threads until they are picked up by output file write thread
         private static Dictionary<Int64, Byte[]> s_writeQueue;
+        private static Dictionary<Int64, Byte[]> WriteQueue
+        {
+            get
+            {
+                if (s_writeQueue == null)
+                {
+                    s_writeQueue = new Dictionary<Int64, Byte[]>();
+                }
+                return s_writeQueue;
+            }
+
+            set
+            {
+                if (s_writeQueue == null)
+                {
+                    s_writeQueue = new Dictionary<Int64, Byte[]>();
+                }
+                if (value == null)
+                {
+                    s_writeQueue.Clear();
+                }
+                else
+                {
+                    s_writeQueue = value;
+                }
+            }
+        }
+        
         // Read buffer lock object
         private static readonly Object s_writeQueueLocker = new Object();
+        #endregion
         #endregion
 
         #region Operations mode
@@ -176,7 +264,7 @@ namespace GZipTest
                         Int32 readQueueItemsCount;
                         lock (s_readQueueLocker)
                         {
-                            readQueueItemsCount = s_readQueue.Count;
+                            readQueueItemsCount = ReadQueue.Count;
                         }
                         if (readQueueItemsCount >= s_maxReadQueueLength)
                         {
@@ -213,7 +301,7 @@ namespace GZipTest
 
                         lock (s_readQueueLocker)
                         {
-                            s_readQueue.Add(s_readSequenceNumber, buffer);
+                            ReadQueue.Add(s_readSequenceNumber, buffer);
                         }
 
                         s_readSequenceNumber++;
@@ -265,7 +353,7 @@ namespace GZipTest
                         Int32 readQueueItemsCount;
                         lock (s_readQueueLocker)
                         {
-                            readQueueItemsCount = s_readQueue.Count;
+                            readQueueItemsCount = ReadQueue.Count;
                         }
                         if (readQueueItemsCount >= s_maxReadQueueLength)
                         {
@@ -323,7 +411,7 @@ namespace GZipTest
                                         Array.Copy(buffer, 0, segmentBuffer, tmpBuffer.Length, i);
                                         lock (s_readQueueLocker)
                                         {
-                                            s_readQueue.Add(s_readSequenceNumber, segmentBuffer);
+                                            ReadQueue.Add(s_readSequenceNumber, segmentBuffer);
                                         }
 
                                         #region Debug
@@ -348,7 +436,7 @@ namespace GZipTest
                                     Array.Copy(buffer, segmentStartOffset, segmentBuffer, 0, bufferSize);
                                     lock (s_readQueueLocker)
                                     {
-                                        s_readQueue.Add(s_readSequenceNumber, segmentBuffer);
+                                        ReadQueue.Add(s_readSequenceNumber, segmentBuffer);
                                     }
 
                                     #region Debug
@@ -398,7 +486,7 @@ namespace GZipTest
                                 {
                                     lock (s_readQueueLocker)
                                     {
-                                        s_readQueue.Add(s_readSequenceNumber, segmentBuffer);
+                                        ReadQueue.Add(s_readSequenceNumber, segmentBuffer);
                                     }
 
                                     #region Debug
@@ -453,7 +541,7 @@ namespace GZipTest
                         Int32 writeQueueItemsCount = 0;
                         lock (s_writeQueueLocker)
                         {
-                            writeQueueItemsCount = s_writeQueue.Count;
+                            writeQueueItemsCount = WriteQueue.Count;
                         }
 
                         // Suspend the thread until there's no data to write to the output file
@@ -470,7 +558,7 @@ namespace GZipTest
                         Boolean isContainsWriteSequenceNumber = false;
                         lock (s_writeQueueLocker)
                         {
-                            isContainsWriteSequenceNumber = s_writeQueue.ContainsKey(s_writeSequenceNumber);
+                            isContainsWriteSequenceNumber = WriteQueue.ContainsKey(s_writeSequenceNumber);
                         }
                         if (!isContainsWriteSequenceNumber)
                         {
@@ -488,10 +576,10 @@ namespace GZipTest
                             byte[] buffer;
                             lock (s_writeQueueLocker)
                             {
-                                buffer = s_writeQueue[s_writeSequenceNumber];
-                                s_writeQueue.Remove(s_writeSequenceNumber);
+                                buffer = WriteQueue[s_writeSequenceNumber];
+                                WriteQueue.Remove(s_writeSequenceNumber);
 
-                                if (s_writeQueue.Count > s_maxWriteQueueLength)
+                                if (WriteQueue.Count > s_maxWriteQueueLength)
                                 {
                                     s_signalOutputDataQueueReady.Reset();
                                 }
@@ -566,8 +654,8 @@ namespace GZipTest
 
                 lock (s_readQueueLocker)
                 {
-                    buffer = s_readQueue[threadSequenceNumber];
-                    s_readQueue.Remove(threadSequenceNumber);
+                    buffer = ReadQueue[threadSequenceNumber];
+                    ReadQueue.Remove(threadSequenceNumber);
                 }
 
                 // Retry memory allocation flag in case of memory shortage exception
@@ -586,7 +674,7 @@ namespace GZipTest
 
                             lock (s_writeQueueLocker)
                             {
-                                s_writeQueue.Add(threadSequenceNumber, outputStream.ToArray());
+                                WriteQueue.Add(threadSequenceNumber, outputStream.ToArray());
                             }
                         }
                     }
@@ -633,8 +721,8 @@ namespace GZipTest
 
                 lock (s_readQueueLocker)
                 {
-                    buffer = s_readQueue[threadSequenceNumber];
-                    s_readQueue.Remove(threadSequenceNumber);
+                    buffer = ReadQueue[threadSequenceNumber];
+                    ReadQueue.Remove(threadSequenceNumber);
                 }
 
                 // Retry memory allocation flag in case of memory shortage exception
@@ -659,7 +747,7 @@ namespace GZipTest
 
                             lock (s_writeQueueLocker)
                             {
-                                s_writeQueue.Add(threadSequenceNumber, decompressedData);
+                                WriteQueue.Add(threadSequenceNumber, decompressedData);
                             }
                             decompressedData = null;
                         }
@@ -700,16 +788,16 @@ namespace GZipTest
                     // Killing all running threads is emergency shutdown is requested
                     if (s_isEmergencyShutdown == true)
                     {
-                        if (s_workerThreads.Count > 0)
+                        if (WorkerThreads.Count > 0)
                         {
-                            foreach (Int32 threadSequenceNumber in s_workerThreads.Keys)
+                            foreach (Int32 threadSequenceNumber in WorkerThreads.Keys)
                             {
-                                if (s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Background ||
-                                    s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Running ||
-                                    s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Suspended ||
-                                    s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.WaitSleepJoin)
+                                if (WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.Background ||
+                                    WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.Running ||
+                                    WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.Suspended ||
+                                    WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.WaitSleepJoin)
                                 {
-                                    s_workerThreads[threadSequenceNumber].Abort();
+                                    WorkerThreads[threadSequenceNumber].Abort();
                                 }
                             }
                         }
@@ -718,14 +806,13 @@ namespace GZipTest
                     }
 
                     // Looking for finished threads
-                    // TODO: Implement a property with initialization if null
-                    if (s_workerThreads.Count > 0)
+                    if (WorkerThreads.Count > 0)
                     {
                         List<Int32> finishedThreads = new List<Int32>();
-                        foreach (Int32 threadSequenceNumber in s_workerThreads.Keys)
+                        foreach (Int32 threadSequenceNumber in WorkerThreads.Keys)
                         {
-                            if (s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Stopped ||
-                                s_workerThreads[threadSequenceNumber].ThreadState == ThreadState.Aborted)
+                            if (WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.Stopped ||
+                                WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.Aborted)
                             {
                                 finishedThreads.Add(threadSequenceNumber);
                             }
@@ -735,19 +822,19 @@ namespace GZipTest
                         foreach (Int32 threadSequenceNumber in finishedThreads)
                         {
                             // Removing all of them
-                            s_workerThreads.Remove(threadSequenceNumber);
+                            WorkerThreads.Remove(threadSequenceNumber);
                         }
                     }
 
                     // If there's less than maximum allowed threads are running, spawn a new one                    
-                    if (s_workerThreads.Count < s_maxThreadsCount)
+                    if (WorkerThreads.Count < s_maxThreadsCount)
                     {
                         // Spawning a new thread
                         lock (s_readQueueLocker)
                         {
-                            foreach (Int64 threadSequenceNumber in s_readQueue.Keys)
+                            foreach (Int64 threadSequenceNumber in ReadQueue.Keys)
                             {
-                                if (!s_workerThreads.ContainsKey(threadSequenceNumber))
+                                if (!WorkerThreads.ContainsKey(threadSequenceNumber))
                                 {
                                     // Spawn a corresponding thread according to the selected operations mode
                                     Thread workerThread = null;
@@ -771,8 +858,8 @@ namespace GZipTest
                                     }
 
                                     workerThread.Name = String.Format("Data processing (seq: {0})", threadSequenceNumber);
-                                    s_workerThreads.Add(threadSequenceNumber, workerThread);
-                                    s_workerThreads[threadSequenceNumber].Start(threadSequenceNumber);
+                                    WorkerThreads.Add(threadSequenceNumber, workerThread);
+                                    WorkerThreads[threadSequenceNumber].Start(threadSequenceNumber);
                                     break;
                                 }
                             }
@@ -788,11 +875,11 @@ namespace GZipTest
                     // Check if there's any block of data in the file read queue
                     lock (s_readQueueLocker)
                     {
-                        readQueueCount = s_readQueue.Count;
+                        readQueueCount = ReadQueue.Count;
                     }
 
                 } while (!s_isInputFileRead ||
-                         s_workerThreads.Count > 0 ||
+                         WorkerThreads.Count > 0 ||
                          readQueueCount > 0);    
             }
             catch (Exception ex)
@@ -817,9 +904,6 @@ namespace GZipTest
             try
             {
                 // Initializing variables
-                s_workerThreads = new Dictionary<Int64, Thread>();
-                s_readQueue = new Dictionary<Int64, Byte[]>();
-                s_writeQueue = new Dictionary<Int64, Byte[]>();
                 s_isInputFileRead = false;
                 s_isDataProcessingDone = false;
                 s_isOutputFileWritten = false;
