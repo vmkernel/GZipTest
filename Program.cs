@@ -102,13 +102,13 @@ namespace GZipTest
         private static Int32 s_maxThreadsCount;
         #endregion
 
-        // TODO: add a comment
+        // Worker threads manager thread
         private static Thread s_workerThreadsManagerThread;
 
-        // TODO: add a comment
+        // Input (un)compressed file read thread
         private static Thread s_inputFileReadThread;
 
-        // TODO: add a comment
+        // Output (de)compressed file write thread
         private static Thread s_outputFileWriteThread;
         #endregion
 
@@ -319,6 +319,11 @@ namespace GZipTest
                     }
                 }
             }
+            catch (ThreadAbortException)
+            {
+                // No need to spoil probably existing emergency shutdown message
+                s_isEmergencyShutdown = true;
+            }
             catch (Exception ex)
             {
                 s_isEmergencyShutdown = true;
@@ -518,6 +523,11 @@ namespace GZipTest
                     }
                 }
             }
+            catch (ThreadAbortException)
+            {
+                // No need to spoil probably existing emergency shutdown message
+                s_isEmergencyShutdown = true;
+            }
             catch (Exception ex)
             {
                 s_isEmergencyShutdown = true;
@@ -527,7 +537,7 @@ namespace GZipTest
             s_isInputFileRead = true;
         }
 
-        // Universal (compressed and decompressed) file write function (threaded)
+        // Universal (de)compressed file write function (threaded)
         private static void FileWriteThread(object parameter)
         {
             s_isOutputFileWritten = false;
@@ -636,6 +646,11 @@ namespace GZipTest
                         Thread.Sleep(1000);
                     }
                 }
+            }
+            catch (ThreadAbortException)
+            {
+                // No need to spoil probably existing emergency shutdown message
+                s_isEmergencyShutdown = true;
             }
             catch (Exception ex)
             {
@@ -893,6 +908,11 @@ namespace GZipTest
                          WorkerThreads.Count > 0 ||
                          readQueueCount > 0);    
             }
+            catch (ThreadAbortException)
+            {
+                // No need to spoil probably existing emergency shutdown message
+                s_isEmergencyShutdown = true;
+            }
             catch (Exception ex)
             {
                 s_isEmergencyShutdown = true;
@@ -986,10 +1006,34 @@ namespace GZipTest
                 s_outputFileWriteThread.Name = "Write output file";
                 s_outputFileWriteThread.Start(outputFilePath);
 
-                // TODO: add emergency shutdown cleanup procedure
-                s_inputFileReadThread.Join();
-                s_outputFileWriteThread.Join();
-                s_workerThreadsManagerThread.Join();
+                // Awaiting for all thread to complete while being able to kill them if an exception is occured
+                while (!s_isInputFileRead || 
+                       !s_isDataProcessingDone ||
+                       !s_isOutputFileWritten)
+                {
+                    // Killing all the threads that was started here if emergency shutdown is requested
+                    if (s_isEmergencyShutdown)
+                    {
+                        if (s_inputFileReadThread != null)
+                        {
+                            s_inputFileReadThread.Abort();
+                        }
+
+                        if (s_outputFileWriteThread != null)
+                        {
+                            s_outputFileWriteThread.Abort();
+                        }
+
+                        if (s_workerThreadsManagerThread != null)
+                        {
+                            s_workerThreadsManagerThread.Abort();
+                        }
+
+                        break;
+                    }
+
+                    Thread.Sleep(10000);
+                }
             }
             catch (Exception ex)
             {
@@ -1012,6 +1056,15 @@ namespace GZipTest
     {
         static void PrintUsage()
         {
+            String appName;
+            if (String.IsNullOrEmpty(System.AppDomain.CurrentDomain.FriendlyName))
+            {
+                appName = "app.exe";
+            }
+            else
+            {
+                appName = System.AppDomain.CurrentDomain.FriendlyName;
+            }
             String message = String.Format(
                 "\nThis program implements multi-threaded compresses and decompresses for a specified file using GZipStream class from .NET 3.5\n\n" +
                 "Usage:\n" +
@@ -1026,7 +1079,7 @@ namespace GZipTest
                 "Examples:\n" +
                 "{0} compress \"c:\\Documents\\iis.log\" \"c:\\Documents\\iis.log.gz\"\n" +
                 "{0} decompress \"c:\\Documents\\iis.log.gz\" \"c:\\Documents\\iis.log\"\n\n",
-                System.AppDomain.CurrentDomain.FriendlyName);
+                appName);
 
             Console.Write(message);
         }
@@ -1036,7 +1089,6 @@ namespace GZipTest
             String inputFilePath;
             String outputFilePath;
 
-            
             try
             {
                 #region Checking arguments
