@@ -64,6 +64,7 @@ namespace GZipTest
         #endregion
 
         #region Threads
+        #region Worker threads
         // Threads pool
         private static Dictionary<Int64, Thread> s_workerThreads;
         private static Dictionary<Int64, Thread> WorkerThreads
@@ -99,6 +100,16 @@ namespace GZipTest
 
         // Maximum worker threads count
         private static Int32 s_maxThreadsCount;
+        #endregion
+
+        // TODO: add a comment
+        private static Thread s_workerThreadsManagerThread;
+
+        // TODO: add a comment
+        private static Thread s_inputFileReadThread;
+
+        // TODO: add a comment
+        private static Thread s_outputFileWriteThread;
         #endregion
 
         #region Block sequences management
@@ -903,6 +914,11 @@ namespace GZipTest
 
             try
             {
+                // Initializing threads
+                s_workerThreadsManagerThread = null;
+                s_inputFileReadThread = null;
+                s_outputFileWriteThread = null;
+
                 // Initializing variables
                 s_isInputFileRead = false;
                 s_isDataProcessingDone = false;
@@ -936,26 +952,23 @@ namespace GZipTest
                 }
 
                 // Starting compression threads manager thread
-                // TODO: make a global variable to be able to kill all threads on error
-                Thread workerThreadsManagerThread = new Thread(WorkerThreadsDispatcherThread);
-                workerThreadsManagerThread.Name = "Worker threads manager";
-                workerThreadsManagerThread.Start();
+                s_workerThreadsManagerThread = new Thread(WorkerThreadsDispatcherThread);
+                s_workerThreadsManagerThread.Name = "Worker threads manager";
+                s_workerThreadsManagerThread.Start();
 
                 // Initializing input file read thread
-                // TODO: make a global variable to be able to kill all threads on error
-                Thread inputFileReadThread = null;
                 switch (s_compressionMode)
                 {
                     case CompressionMode.Compress:
                         // Starting file reader thread
-                        inputFileReadThread = new Thread(FileReadUncompressedThread);
-                        inputFileReadThread.Name = "Read uncompressed input file";
+                        s_inputFileReadThread = new Thread(FileReadUncompressedThread);
+                        s_inputFileReadThread.Name = "Read uncompressed input file";
                         break;
 
                     case CompressionMode.Decompress:
                         // Starting file reader thread
-                        inputFileReadThread = new Thread(FileReadCompressedThread);
-                        inputFileReadThread.Name = "Read compressed input file";
+                        s_inputFileReadThread = new Thread(FileReadCompressedThread);
+                        s_inputFileReadThread.Name = "Read compressed input file";
                         break;
 
                     default:
@@ -963,17 +976,17 @@ namespace GZipTest
                 }
 
                 // Starting previously initialized input file read thread
-                inputFileReadThread.Start(inputFilePath);
+                s_inputFileReadThread.Start(inputFilePath);
 
                 // Starting compressed file write thread
-                // TODO: make a global variable to be able to kill all threads on error
-                Thread outputFileWriteThread = new Thread(FileWriteThread);
-                outputFileWriteThread.Name = "Write output file";
-                outputFileWriteThread.Start(outputFilePath);
+                s_outputFileWriteThread = new Thread(FileWriteThread);
+                s_outputFileWriteThread.Name = "Write output file";
+                s_outputFileWriteThread.Start(outputFilePath);
 
-                inputFileReadThread.Join();
-                outputFileWriteThread.Join();
-                workerThreadsManagerThread.Join();
+                // TODO: add emergency shutdown cleanup procedure
+                s_inputFileReadThread.Join();
+                s_outputFileWriteThread.Join();
+                s_workerThreadsManagerThread.Join();
             }
             catch (Exception ex)
             {
