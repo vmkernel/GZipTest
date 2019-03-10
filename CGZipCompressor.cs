@@ -10,10 +10,85 @@ using System.Threading;
 
 namespace GZipTest
 {
+    public class CGZipBlockMetadata
+    {
+        private Int32 UncompressedSizeBufferLength
+        {
+            get
+            {
+                return sizeof(Int32); // TODO: replace with relative sizeof calculation
+            }
+        }
+
+        private Int32 CompressedSizeBufferLength
+        {
+            get
+            {
+                return sizeof(Int32); // TODO: replace with relative sizeof calculation
+            }
+        }
+
+        private Byte[] s_uncompressedBuffer;
+        private Byte[] s_compressedBuffer;
+
+        public Int32 Size
+        {
+            get
+            {
+                return UncompressedSizeBufferLength + CompressedSizeBufferLength;
+            }
+        }
+
+        private Int32 s_uncompressedBlockSize;
+        public Int32 UncompressedBlockSize
+        {
+            get
+            {
+                return s_uncompressedBlockSize;
+            }
+        }
+
+        private Int32 s_compressedBlockSize;
+        public Int32 CompressedBlockSize
+        {
+            get
+            {
+                return s_compressedBlockSize;
+            }
+        }
+        
+        public CGZipBlockMetadata(Byte[] buffer)
+        {
+            s_uncompressedBuffer = new Byte[UncompressedSizeBufferLength];
+            s_compressedBuffer = new Byte[CompressedSizeBufferLength];
+
+            Array.Copy(buffer, 0, s_uncompressedBuffer, 0, UncompressedSizeBufferLength);
+            Array.Copy(buffer, UncompressedSizeBufferLength, s_compressedBuffer, 0, CompressedSizeBufferLength);
+
+            s_uncompressedBlockSize = BitConverter.ToInt32(s_uncompressedBuffer, 0);
+            s_compressedBlockSize = BitConverter.ToInt32(s_compressedBuffer, 0);
+        }
+    }
+
     public struct SGZipCompressedBlockInfo
     {
         public Int32 OriginalSize;
         public Int32 CompressedSize;
+
+        public SGZipCompressedBlockInfo(Byte[] buffer)
+        {
+            Int32 originalSizeBufferSize = sizeof(Int32); // TODO: replace with relative sizeof calculation
+            Int32 compressedSizeBufferSize = sizeof(Int32); // TODO: replace with relative sizeof calculation
+
+            Byte[] originalSizeBuffer = new Byte[originalSizeBufferSize];
+            Byte[] compressedSizeBuffer = new Byte[compressedSizeBufferSize];
+
+            Array.Copy(buffer, 0, originalSizeBuffer, 0, originalSizeBufferSize);
+            Array.Copy(buffer, originalSizeBufferSize, compressedSizeBuffer, 0, compressedSizeBufferSize);
+
+            OriginalSize = BitConverter.ToInt32(originalSizeBuffer, 0);
+            CompressedSize = BitConverter.ToInt32(compressedSizeBuffer, 0);
+        }
     }
 
     public class CGZipBlock
@@ -35,6 +110,31 @@ namespace GZipTest
 
             return resultantBuffer;
         }
+
+        public Int32 OriginalSizeBufferSize
+        {
+            get
+            {
+                return sizeof(Int32); // TODO: replace with relative sizeof calculation
+            }
+        }
+
+        public Int32 CompressedSizeBufferSize
+        {
+            get
+            {
+                return sizeof(Int32); // TODO: replace with relative sizeof calculation
+            }
+        }
+
+        public Int32 MetadataSize
+        {
+            get
+            {
+                return sizeof(Int32) * 2; // TODO: replace with relative sizeof calculation
+            }
+        }
+
 
         public CGZipBlock()
         {
@@ -243,36 +343,6 @@ namespace GZipTest
                 }
             }
         }
-        /*
-        private static Dictionary<Int64, Byte[]> s_writeQueue;
-        private static Dictionary<Int64, Byte[]> WriteQueue
-        {
-            get
-            {
-                if (s_writeQueue == null)
-                {
-                    s_writeQueue = new Dictionary<Int64, Byte[]>();
-                }
-                return s_writeQueue;
-            }
-
-            set
-            {
-                if (s_writeQueue == null)
-                {
-                    s_writeQueue = new Dictionary<Int64, Byte[]>();
-                }
-                if (value == null)
-                {
-                    s_writeQueue.Clear();
-                }
-                else
-                {
-                    s_writeQueue = value;
-                }
-            }
-        }
-        */
 
         // Read buffer lock object
         private static readonly Object s_writeQueueLocker = new Object();
@@ -419,6 +489,7 @@ namespace GZipTest
         }
 
         // Compressed file read function (threaded)
+        /*
         private static void FileReadCompressedThread(object parameter)
         {
             s_isInputFileRead = false;
@@ -621,6 +692,88 @@ namespace GZipTest
 
             s_isInputFileRead = true;
         }
+        */
+
+        private static void FileReadCompressedThread(object parameter)
+        {
+            s_isInputFileRead = false;
+
+            if (s_isEmergencyShutdown)
+            {
+                return;
+            }
+
+            try
+            {
+                if (parameter == null)
+                {
+                    throw new ArgumentNullException("parameter", "Input compressed file path for File Read thread is null");
+                }
+                String fileName = (String)parameter;
+
+                Int64 bytesRead;
+                Int64 bufferSize;
+
+                using (FileStream inputStream = new FileStream(fileName, FileMode.Open, FileAccess.Read))
+                {
+                    while (inputStream.Position < inputStream.Length)
+                    {
+                        // Throtling read of thre file until the file writer thread signals that output data queue is ready to receive more data
+                        s_signalOutputDataQueueReady.WaitOne();
+
+                        // Throttling read of the input file in order to not to drain free memory
+                        // If the read queue lenght is greather than maximum allowed value
+                        Int32 readQueueItemsCount;
+                        lock (s_readQueueLocker)
+                        {
+                            readQueueItemsCount = ReadQueue.Count;
+                        }
+                        if (readQueueItemsCount >= s_maxReadQueueLength)
+                        {
+                            // Until a block of data has been written to the output file
+                            s_signalOutputDataWritten.WaitOne();
+
+                            // And re-evaluate this contidition
+                            continue;
+                        }
+
+                        // Reading metadata
+                        CGZipBlock compressedBlock = new CGZipBlock();
+                        
+                        Byte[] metadataBuffer = new byte[compressedBlock.MetadataSize];
+                        inputStream.Read(metadataBuffer, 0, metadataBuffer.Length);
+
+                        CGZipBlockMetadata blockMetadata = new CGZipBlockMetadata(metadataBuffer);
+
+                        // Calculating read block size
+
+                        // Reading the block
+
+
+                        #region Debug
+
+                        using (FileStream partFile = new FileStream(@"d:\tmp\detected_compressed_part" + s_readSequenceNumber + ".gz", FileMode.Create))
+                        {
+                            //partFile.Write(segmentBuffer, 0, segmentBuffer.Length);
+                        }
+
+                        #endregion                
+                    }
+                }
+            }
+            catch (ThreadAbortException)
+            {
+                // No need to spoil probably existing emergency shutdown message
+                s_isEmergencyShutdown = true;
+            }
+            catch (Exception ex)
+            {
+                s_isEmergencyShutdown = true;
+                s_emergencyShutdownMessage = String.Format("An unhandled exception in Compressed File Read thread caused the process to stop: {0}", ex.Message);
+            }
+
+            s_isInputFileRead = true;
+        }
 
         // Compressed file write function (threaded)
         private static void FileWriteCompressedThread(object parameter)
@@ -648,6 +801,16 @@ namespace GZipTest
                         lock (s_writeQueueLocker)
                         {
                             writeQueueItemsCount = WriteQueue.Count;
+                        }
+
+                        // Signalling to <X> thread
+                        if (WriteQueue.Count > s_maxWriteQueueLength)
+                        {
+                            s_signalOutputDataQueueReady.Reset();
+                        }
+                        else
+                        {
+                            s_signalOutputDataQueueReady.Set();
                         }
 
                         // Suspend the thread until there's no data to write to the output file
@@ -684,25 +847,17 @@ namespace GZipTest
                             {
                                 compressedBlock = WriteQueue[s_writeSequenceNumber];
                                 WriteQueue.Remove(s_writeSequenceNumber);
-
-                                if (WriteQueue.Count > s_maxWriteQueueLength)
-                                {
-                                    s_signalOutputDataQueueReady.Reset();
-                                }
-                                else
-                                {
-                                    s_signalOutputDataQueueReady.Set();
-                                }
                             }
 
-                            // Writing metadata
+                            // Writing a block of data with its metadata
                             Byte[] buffer = compressedBlock.ToByteArray();
 
+                            /*
                             // DEBUG
                             CGZipBlock block = new CGZipBlock(buffer);
                             Boolean isTheSame = Array.Equals(block.Data, compressedBlock.Data);
-
-                            // Writing compressed data
+                            */
+                            
                             outputStream.Write(buffer, 0, buffer.Length);
 
                             #region Debug
@@ -752,10 +907,14 @@ namespace GZipTest
             }
         }
 
-        // Universal (de)compressed file write function (threaded)
-        /*
-        private static void FileWriteThread(object parameter)
+        // Decompressed file write function (threaded)
+        private static void FileWriteDecompressedThread(object parameter)
         {
+            // DEBUG
+            s_signalOutputDataQueueReady.Set();
+            return;
+            // DEBUG
+
             s_isOutputFileWritten = false;
 
             try
@@ -779,6 +938,16 @@ namespace GZipTest
                         lock (s_writeQueueLocker)
                         {
                             writeQueueItemsCount = WriteQueue.Count;
+                        }
+
+                        // Signalling to <X> thread
+                        if (WriteQueue.Count > s_maxWriteQueueLength)
+                        {
+                            s_signalOutputDataQueueReady.Reset();
+                        }
+                        else
+                        {
+                            s_signalOutputDataQueueReady.Set();
                         }
 
                         // Suspend the thread until there's no data to write to the output file
@@ -810,27 +979,23 @@ namespace GZipTest
                         else
                         {
                             // If there is a block with correct write sequence number, write it to the output file
-                            byte[] buffer;
+                            CGZipBlock compressedBlock;
                             lock (s_writeQueueLocker)
                             {
-                                buffer = WriteQueue[s_writeSequenceNumber];
+                                compressedBlock = WriteQueue[s_writeSequenceNumber];
                                 WriteQueue.Remove(s_writeSequenceNumber);
-
-                                if (WriteQueue.Count > s_maxWriteQueueLength)
-                                {
-                                    s_signalOutputDataQueueReady.Reset();
-                                }
-                                else
-                                {
-                                    s_signalOutputDataQueueReady.Set();
-                                }
                             }
 
-                            // DEBUG
-                            outputStream.Write(buffer, 0, buffer.Length);
-                            // DEBUG
+                            // Writing a block of data with its metadata
+                            Byte[] buffer = compressedBlock.ToByteArray();
 
-                            //outputStream.Write(buffer, 0, buffer.Length);
+                            /*
+                            // DEBUG
+                            CGZipBlock block = new CGZipBlock(buffer);
+                            Boolean isTheSame = Array.Equals(block.Data, compressedBlock.Data);
+                            */
+
+                            outputStream.Write(buffer, 0, buffer.Length);
 
                             #region Debug
 
@@ -878,13 +1043,10 @@ namespace GZipTest
                 s_emergencyShutdownMessage = String.Format("An unhandled exception in File Write thread caused the process to stop: {0}", ex.Message);
             }
         }
-        */
 
         // Threaded compression function
         private static void BlockCompressionThread(object parameter)
         {
-            byte[] buffer;
-
             if (s_isEmergencyShutdown)
             {
                 return;
@@ -892,13 +1054,15 @@ namespace GZipTest
 
             try
             {
+                // Checking and receiving thread sequence number from input object
                 if (parameter == null)
                 {
                     throw new ArgumentNullException("parameter", "Thread sequence number for Block Compression thread is null");
                 }
-
                 Int64 threadSequenceNumber = (Int64)parameter;
 
+                // Moving a block of uncompressed data from read queue to a local buffer
+                byte[] buffer;
                 lock (s_readQueueLocker)
                 {
                     buffer = ReadQueue[threadSequenceNumber];
@@ -911,24 +1075,28 @@ namespace GZipTest
                 {
                     try
                     {
+                        // Allocating memory stream to write to which from the uncompressed data buffer
                         using (MemoryStream outputStream = new MemoryStream(buffer.Length))
                         {
                             using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
                             {
+                                // compressing data
                                 compressionStream.Write(buffer, 0, buffer.Length);
                             }
 
+                            // Placing compressed data in a special data block
                             CGZipBlock compressedBlock = new CGZipBlock();
                             compressedBlock.Data = outputStream.ToArray();
 
-                            SGZipCompressedBlockInfo metadata = new SGZipCompressedBlockInfo();
-                            metadata.OriginalSize = buffer.Length;
-                            metadata.CompressedSize = compressedBlock.Data.Length;
-                            compressedBlock.Metadata = metadata;
+                            // Placing metadata extracted from input uncompression block of data and output compressed block of data
+                            SGZipCompressedBlockInfo blockMetadata = new SGZipCompressedBlockInfo();
+                            blockMetadata.OriginalSize = buffer.Length;
+                            blockMetadata.CompressedSize = compressedBlock.Data.Length;
+                            compressedBlock.Metadata = blockMetadata;
 
+                            // Placing the block of data and metadata to the write queue
                             lock (s_writeQueueLocker)
                             {
-                                //WriteQueue.Add(threadSequenceNumber, outputStream.ToArray());
                                 WriteQueue.Add(threadSequenceNumber, compressedBlock);
                             }
                         }
@@ -1239,8 +1407,8 @@ namespace GZipTest
                         s_inputFileReadThread.Name = "Read compressed input file";
 
                         // Initializing file writer thread
-                        //s_outputFileWriteThread = new Thread(FileWriteDecompressedThread);
-                        //s_outputFileWriteThread.Name = "Decompressed file writer";
+                        s_outputFileWriteThread = new Thread(FileWriteDecompressedThread);
+                        s_outputFileWriteThread.Name = "Decompressed file writer";
                         break;
 
                     default:
