@@ -100,22 +100,6 @@ namespace GZipTest
                     throw new ArgumentException(message);
                 }
                 */
-
-
-                #endregion
-
-                #region DEBUG
-                //String inputFilePath = @"c:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
-                //String inputFilePath = @"c:\tmp\uncompressed-files-archive.zip";
-                //String inputFilePath = @"c:\tmp\";
-                //String inputFilePath = @"e:\Downloads\Movies\Imaginaerum.2012.1080p.BluRay.x264.YIFY.mp4";
-                //String inputFilePath = @"e:\Downloads\Movies\Mad.Max.Fury.Road.2015.1080p.BluRay.AC3.x264-ETRG.mkv";
-                //FileInfo inputFileInfo = new FileInfo(inputFilePath);
-                //String compressedFilePath = inputFileInfo.FullName + ".gz";
-                //String decompressedFilePath = inputFileInfo.Directory + @"\" + inputFileInfo.Name.Replace(inputFileInfo.Extension, null) + " (1)" + inputFileInfo.Extension;
-
-                //CGZipCompressor.Run(inputFilePath, compressedFilePath, CompressionMode.Compress);
-                //CGZipCompressor.Run(compressedFilePath, decompressedFilePath, CompressionMode.Decompress);
                 #endregion
 
                 #region Starting compression
