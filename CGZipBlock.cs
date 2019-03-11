@@ -56,7 +56,6 @@ namespace GZipTest
         private Byte[] s_data;
         public Byte[] Data
         {
-            // In order to prevent NullReferrenceException, gets and sets an empty array instead of null
             get
             {
                 if (s_data == null)
