@@ -11,44 +11,39 @@ namespace GZipTest
     public static class CGZipCompressor
     {
         #region HARDCODED SETTINGS
-        // HARDCODE!
-        // Data block size
-        // When compressing: size of data buffer per each thread
-        // When decompressing: size of read buffer for compressed file
-        // WARNING: block decompression thread assumes that this is the maximum possible size of the output buffer
-        private static readonly Int32 s_chunkSize = 128 * 1024 * 1024;
+        // Size in bytes of a compression block from a input uncompressed file
+        // An input file is split to blocks with the specified size and each block is compressed separately by a block compression thread
+        private static readonly Int32 s_compressionBlockSize = 128 * 1024 * 1024;
 
-        // HARDCODE!
         // Maximum lenght of read queue.
         // After reaching this value file read thread will wait until data from read queue will be processed by worker thread(s)
-        private static readonly Int32 s_maxReadQueueLength = 10;
+        private static readonly Int32 s_maxReadQueueLength = 4;
 
-        // HARDCODE!
         // Maximum lenght of write queue. 
         // After reaching this value file read thread will wait until data from write queue will be written to output file
         private static readonly Int32 s_maxWriteQueueLength = 4;
 
-        // HARDCODE!
-        // Mamimum threads limiter subtraction value (useful when you don't want to hung your PC during (de)compression)
-        private static readonly Int32 s_maxThreadsSubtraction = 1;
+        // Reserves the specified number of CPU cores for the running operations system
+        // If the value is 0, then no reservation applies
+        // If the value is 1, then one CPU core is kept for the system to run more smoothly and responsively to a user's actions (and so on)
+        private static readonly Int32 s_cpuReservation = 1;
         #endregion
 
         #region FIELDS
+        // TODO: check gzipped block signature before decompressing a block
         // First three bytes of a GZip file (compressed block) signature
         //private static readonly Byte[] s_gZipFileSignature = new Byte[] { 0x1F, 0x8B, 0x08 };
 
+        // Operations mode (compression or decompression)
+        public static CompressionMode CompressionMode { get; set; }
+
         #region Emergency shutdown
         // Emergency shutdown flag
-        private static Boolean s_isEmergencyShutdown;
-        public static Boolean IsEmergencyShutdown
-        {
-            get
-            {
-                return s_isEmergencyShutdown;
-            }
-        }
+        // Indicates an unexpected error and all running threads will exit as soon as possible
+        public static Boolean IsEmergencyShutdown { get; private set; }
 
         // Emergency shutdown message
+        // When IsEmergencyShutdown flas is set, stores a description of an error that has caused the error
         private static String s_emergencyShutdownMessage;
         public static String EmergenceShutdownMessage
         {
@@ -66,7 +61,7 @@ namespace GZipTest
 
         #region Threads
         #region Worker threads
-        // Threads pool
+        // Worker threads (compression / decompression) pool
         private static Dictionary<Int64, Thread> s_workerThreads;
         private static Dictionary<Int64, Thread> WorkerThreads
         {
@@ -96,7 +91,7 @@ namespace GZipTest
             }
         }
 
-        // Threads pool locker
+        // Worker threads pool inter-thread locker
         private static readonly Object s_workerThreadsLocker = new Object();
 
         // Maximum worker threads count
@@ -106,26 +101,26 @@ namespace GZipTest
         // Worker threads manager thread
         private static Thread s_workerThreadsManagerThread;
 
-        // Input (un)compressed file read thread
+        // Input file read thread
         private static Thread s_inputFileReadThread;
 
-        // Output (de)compressed file write thread
+        // Output file write thread
         private static Thread s_outputFileWriteThread;
         #endregion
 
         #region Block sequences management
         // Read sequence number
+        // Indicates a sequence number of current block that has been read from an input file
         private static Int64 s_readSequenceNumber;
 
         // Read sequence number
+        // Indicates a sequence number of current block that has to be written to an output file
         private static Int64 s_writeSequenceNumber;
-        // Write sequence number lock object
-        private static readonly Object s_writeSequenceNumberLocker = new Object();
         #endregion
 
         #region Queues
         #region Compression queue
-        // Stores uncompressed blocks that has been read from the uncompressed input file until they are picked up by Worker threads
+        // Stores uncompressed blocks (that has been read from an uncompressed input file) until they are picked up by a Compression thread
         private static Dictionary<Int64, Byte[]> s_queueCompression;
         private static Dictionary<Int64, Byte[]> QueueCompression
         {
@@ -155,82 +150,12 @@ namespace GZipTest
             }
         }
 
-        // Read queue lock object
+        // Compression queue inter-thread locker
         private static readonly Object s_queueCompressionLocker = new Object();
         #endregion
 
-        #region Decompression queue
-        // Stores compressed blocks with metadata that has been read from the input file until they are picked up by a Decompression thread
-        private static Dictionary<Int64, CGZipBlock> s_queueDecompression;
-        private static Dictionary<Int64, CGZipBlock> QueueDecompression
-        {
-            get
-            {
-                if (s_queueDecompression == null)
-                {
-                    s_queueDecompression = new Dictionary<Int64, CGZipBlock>();
-                }
-                return s_queueDecompression;
-            }
-
-            set
-            {
-                if (s_queueDecompression == null)
-                {
-                    s_queueDecompression = new Dictionary<Int64, CGZipBlock>();
-                }
-                if (value == null)
-                {
-                    s_queueDecompression.Clear();
-                }
-                else
-                {
-                    s_queueDecompression = value;
-                }
-            }
-        }
-
-        // Read queue lock object
-        private static readonly Object s_queueDecompressionLocker = new Object();
-        #endregion
-
-        #region Decompressed blocks write queue
-        // Stores decompressed blocks which are produced by Worker threads until they are picked up by output file write thread
-        private static Dictionary<Int64, Byte[]> s_queueDecompressedWrite;
-        private static Dictionary<Int64, Byte[]> QueueDecompressedWrite
-        {
-            get
-            {
-                if (s_queueDecompressedWrite == null)
-                {
-                    s_queueDecompressedWrite = new Dictionary<Int64, Byte[]>();
-                }
-                return s_queueDecompressedWrite;
-            }
-
-            set
-            {
-                if (s_queueDecompressedWrite == null)
-                {
-                    s_queueDecompressedWrite = new Dictionary<Int64, Byte[]>();
-                }
-                if (value == null)
-                {
-                    s_queueDecompressedWrite.Clear();
-                }
-                else
-                {
-                    s_queueDecompressedWrite = value;
-                }
-            }
-        }
-
-        // Read buffer lock object
-        private static readonly Object s_queueDecompressedWriteLocker = new Object();
-        #endregion
-
         #region Compressed blocks write queue
-        // Stores processed (compressed/decompressed) blocks which are produced by Worker threads until they are picked up by output file write thread
+        // Stores compressed blocks with metadata (which are produced by Compression thread) until they are picked up by the output file write thread
         private static Dictionary<Int64, CGZipBlock> s_queueCompressedWrite;
         private static Dictionary<Int64, CGZipBlock> QueueCompressedWrite
         {
@@ -260,65 +185,109 @@ namespace GZipTest
             }
         }
 
-        // Read buffer lock object
+        // Compressed block write queue inter-thread locker
         private static readonly Object s_queueCompressedWriteLocker = new Object();
         #endregion
-        #endregion
 
-        #region Operations mode
-        // Operations mode (compression or decompression)
-        private static CompressionMode s_compressionMode;
-        public static CompressionMode CompressionMode
+        #region Decompression queue
+        // Stores compressed blocks with metadata (that has been read from the input file) until they are picked up by a Decompression thread
+        private static Dictionary<Int64, CGZipBlock> s_queueDecompression;
+        private static Dictionary<Int64, CGZipBlock> QueueDecompression
         {
             get
             {
-                return s_compressionMode;
+                if (s_queueDecompression == null)
+                {
+                    s_queueDecompression = new Dictionary<Int64, CGZipBlock>();
+                }
+                return s_queueDecompression;
             }
+
             set
             {
-                s_compressionMode = value;
+                if (s_queueDecompression == null)
+                {
+                    s_queueDecompression = new Dictionary<Int64, CGZipBlock>();
+                }
+                if (value == null)
+                {
+                    s_queueDecompression.Clear();
+                }
+                else
+                {
+                    s_queueDecompression = value;
+                }
             }
         }
+
+        // Decompression queue inter-therad locker
+        private static readonly Object s_queueDecompressionLocker = new Object();
+        #endregion
+
+        #region Decompressed blocks write queue
+        // Stores decompressed blocks (which are produced by Decompression threads) until they are picked up by the output file write thread
+        private static Dictionary<Int64, Byte[]> s_queueDecompressedWrite;
+        private static Dictionary<Int64, Byte[]> QueueDecompressedWrite
+        {
+            get
+            {
+                if (s_queueDecompressedWrite == null)
+                {
+                    s_queueDecompressedWrite = new Dictionary<Int64, Byte[]>();
+                }
+                return s_queueDecompressedWrite;
+            }
+
+            set
+            {
+                if (s_queueDecompressedWrite == null)
+                {
+                    s_queueDecompressedWrite = new Dictionary<Int64, Byte[]>();
+                }
+                if (value == null)
+                {
+                    s_queueDecompressedWrite.Clear();
+                }
+                else
+                {
+                    s_queueDecompressedWrite = value;
+                }
+            }
+        }
+
+        // Decompressed block write queue inter-thread locker
+        private static readonly Object s_queueDecompressedWriteLocker = new Object();
+        #endregion
         #endregion
 
         #region Flags
         // Flag: the input file has been read and the file read thread has exited
         private static Boolean s_isInputFileRead;
 
-        // Flag: all input data has been processed and all worker threads are terminated
+        // Flag: all input data blocks has been processed and all worker threads are terminated
         private static Boolean s_isDataProcessingDone;
 
         // Flag: the output file has been written and file write thread has exited
         private static Boolean s_isOutputFileWritten;
         #endregion
 
-        #region Inter-thread communication signals (wait handles)
-        // Event: output data queue is ready to receive new block of processed data
-        // Is used to throttle input file read when output file write queue becames to loong
-        private static ManualResetEvent s_signalOutputDataQueueReady = new ManualResetEvent(false);
-
-        // Event: a data processing thread finished processing its block of data
-        private static readonly ManualResetEvent s_signalWorkerThreadReady = new ManualResetEvent(false);
-        // Locker object for s_signalWorkerThreadReady
-        private static readonly Object s_workerThreadReadySignalLocker = new Object();
-
-        // Event: a worker thread has been terminated
-        private static readonly EventWaitHandle s_signalWorkerThreadExited = new EventWaitHandle(false, EventResetMode.AutoReset);
-        // Locker object for s_signalWorkerThreadExited
-        private static readonly Object s_WorkerTreadExitedSignalLocker = new Object();
-
-        // Event: a block of output data has been written to the output file
+        #region Inter-thread communication signals
+        // Is used for throttling input file read when input file read queue becames longer than specified in s_maxReadQueueLength
+        // Fires when a file write thread completes writing of a processed data block
         private static EventWaitHandle s_signalOutputDataWritten = new EventWaitHandle(false, EventResetMode.AutoReset);
+
+        // Is used for throttling input file read when output file write queue becames longer than specified in s_maxWriteQueueLength
+        private static ManualResetEvent s_signalOutputDataQueueReady = new ManualResetEvent(false);        
         #endregion
         #endregion
 
         #region THREADS DEFINITION
-        // Uncompressed file read function (threaded)
+        // Reads the specified uncompressed file block-by-block and puts the blocks to the compression queue (threaded)
         private static void FileReadToCompressThread(object parameter)
         {
             s_isInputFileRead = false;
 
-            if (s_isEmergencyShutdown)
+            if (IsEmergencyShutdown)
             {
                 return;
             }
@@ -358,13 +327,13 @@ namespace GZipTest
                         }
 
                         // Calculating read block size
-                        if ((inputStream.Length - inputStream.Position) < s_chunkSize)
+                        if ((inputStream.Length - inputStream.Position) < s_compressionBlockSize)
                         {
                             bufferSize = (Int32)(inputStream.Length - inputStream.Position);
                         }
                         else
                         {
-                            bufferSize = s_chunkSize;
+                            bufferSize = s_compressionBlockSize;
                         }
 
                         // Is block size correct?
@@ -393,11 +362,11 @@ namespace GZipTest
             catch (ThreadAbortException)
             {
                 // No need to spoil probably existing emergency shutdown message
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
             }
             catch (Exception ex)
             {
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception in Uncompressed File Read thread caused the process to stop: {0}", ex.Message);
             }
 
@@ -409,7 +378,7 @@ namespace GZipTest
         {
             s_isInputFileRead = false;
 
-            if (s_isEmergencyShutdown)
+            if (IsEmergencyShutdown)
             {
                 return;
             }
@@ -477,11 +446,11 @@ namespace GZipTest
             catch (ThreadAbortException)
             {
                 // No need to spoil probably existing emergency shutdown message
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
             }
             catch (Exception ex)
             {
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception in Compressed File Read thread caused the process to stop: {0}", ex.Message);
             }
 
@@ -580,11 +549,7 @@ namespace GZipTest
                             }
                             #endregion
 
-                            lock (s_writeSequenceNumberLocker)
-                            {
-                                s_writeSequenceNumber++;
-                            }
-
+                            s_writeSequenceNumber++;
                             s_signalOutputDataWritten.Set();
                         }
 
@@ -595,11 +560,11 @@ namespace GZipTest
             catch (ThreadAbortException)
             {
                 // No need to spoil probably existing emergency shutdown message
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
             }
             catch (Exception ex)
             {
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception in File Write thread caused the process to stop: {0}", ex.Message);
             }
         }
@@ -681,7 +646,7 @@ namespace GZipTest
 
                             #region Debug
 
-                            switch (s_compressionMode)
+                            switch (CompressionMode)
                             {
                                 case CompressionMode.Compress:
                                     using (FileStream partFile = new FileStream(@"d:\tmp\compressed_part" + s_writeSequenceNumber + ".gz", FileMode.Create))
@@ -702,11 +667,7 @@ namespace GZipTest
                             }
                             #endregion
 
-                            lock (s_writeSequenceNumberLocker)
-                            {
-                                s_writeSequenceNumber++;
-                            }
-
+                            s_writeSequenceNumber++;
                             s_signalOutputDataWritten.Set();
                         }
 
@@ -717,11 +678,11 @@ namespace GZipTest
             catch (ThreadAbortException)
             {
                 // No need to spoil probably existing emergency shutdown message
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
             }
             catch (Exception ex)
             {
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception in File Write thread caused the process to stop: {0}", ex.Message);
             }
         }
@@ -729,7 +690,7 @@ namespace GZipTest
         // Threaded compression function
         private static void BlockCompressionThread(object parameter)
         {
-            if (s_isEmergencyShutdown)
+            if (IsEmergencyShutdown)
             {
                 return;
             }
@@ -792,11 +753,11 @@ namespace GZipTest
             catch (ThreadAbortException)
             {
                 // No need to spoil probably existing emergency shutdown message
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
             }
             catch (Exception ex)
             {
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception in Block Compression thread caused the process to stop: {0}", ex.Message);
             }
         }
@@ -804,7 +765,7 @@ namespace GZipTest
         // Threaded decompression function
         private static void BlockDecompressionThread(object parameter)
         {
-            if (s_isEmergencyShutdown)
+            if (IsEmergencyShutdown)
             {
                 return;
             }
@@ -866,11 +827,11 @@ namespace GZipTest
             catch (ThreadAbortException)
             {
                 // No need to spoil probably existing emergency shutdown message
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
             }
             catch (Exception ex)
             {
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception in Block Decompression thread caused the process to stop: {0}", ex.Message);
             }
         }
@@ -878,7 +839,7 @@ namespace GZipTest
         // Threaded threads dispatcher that starts worker threads and limits their number
         private static void WorkerThreadsDispatcherThread()
         {
-            if (s_isEmergencyShutdown == true)
+            if (IsEmergencyShutdown == true)
             {
                 return;
             }
@@ -889,7 +850,7 @@ namespace GZipTest
                 do
                 {
                     // Killing all running threads is emergency shutdown is requested
-                    if (s_isEmergencyShutdown == true)
+                    if (IsEmergencyShutdown == true)
                     {
                         if (WorkerThreads.Count > 0)
                         {
@@ -932,7 +893,7 @@ namespace GZipTest
                     // If there's less than maximum allowed threads are running, spawn a new one                    
                     if (WorkerThreads.Count < s_maxThreadsCount)
                     {
-                        switch (s_compressionMode)
+                        switch (CompressionMode)
                         {
                             case CompressionMode.Compress:
                                 lock (s_queueCompressionLocker)
@@ -993,11 +954,11 @@ namespace GZipTest
             catch (ThreadAbortException)
             {
                 // No need to spoil probably existing emergency shutdown message
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
             }
             catch (Exception ex)
             {
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception in Worker Threads Dispatcher thread caused the process to stop: {0}", ex.Message);
             }
 
@@ -1009,7 +970,7 @@ namespace GZipTest
         // Initialize internal variables
         private static void Initialize()
         {
-            if (s_isEmergencyShutdown)
+            if (IsEmergencyShutdown)
             {
                 return;
             }
@@ -1025,7 +986,7 @@ namespace GZipTest
                 s_isInputFileRead = false;
                 s_isDataProcessingDone = false;
                 s_isOutputFileWritten = false;
-                s_isEmergencyShutdown = false;
+                IsEmergencyShutdown = false;
 
                 // Cleaning emergency shutdown message
                 s_emergencyShutdownMessage = "";
@@ -1035,11 +996,25 @@ namespace GZipTest
                 s_writeSequenceNumber = 0;
 
                 // Evaluating maximum threads count
-                s_maxThreadsCount = Environment.ProcessorCount - s_maxThreadsSubtraction;
+                if (s_cpuReservation < 0)
+                {
+                    // If the value is incorrect ignoring it
+                    s_maxThreadsCount = Environment.ProcessorCount;
+                }
+                else if (s_cpuReservation >= Environment.ProcessorCount)
+                {
+                    // If the value is greather or equal to CPU cores count, setting worker threads limit to 1 to be able to run at least one worker thread
+                    s_maxThreadsCount = 1;
+                }
+                else
+                {
+                    // On all the other cases simply subtracting CPU reservation from total number of CPU cores of the system
+                    s_maxThreadsCount = Environment.ProcessorCount - s_cpuReservation;
+                }
             }
             catch (Exception ex)
             {
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception during compression module initialization caused the process to stop: {0}", ex.Message);
             }
         }
@@ -1051,7 +1026,7 @@ namespace GZipTest
             {
                 Initialize();
 
-                if (s_isEmergencyShutdown)
+                if (IsEmergencyShutdown)
                 {
                     return;
                 }
@@ -1062,7 +1037,7 @@ namespace GZipTest
                 s_workerThreadsManagerThread.Start();
 
                 // Initializing input file read thread
-                switch (s_compressionMode)
+                switch (CompressionMode)
                 {
                     case CompressionMode.Compress:
                         // Initializing file reader thread
@@ -1100,7 +1075,7 @@ namespace GZipTest
                        !s_isOutputFileWritten)
                 {
                     // Killing all the threads that was started here if emergency shutdown is requested
-                    if (s_isEmergencyShutdown)
+                    if (IsEmergencyShutdown)
                     {
                         if (s_inputFileReadThread != null)
                         {
@@ -1125,7 +1100,7 @@ namespace GZipTest
             }
             catch (Exception ex)
             {
-                s_isEmergencyShutdown = true;
+                IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception in compression method caused the process to stop: {0}", ex.Message);
             }
         }
