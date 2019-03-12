@@ -5,6 +5,9 @@ using System.IO.Compression;
 using System.Threading;
 
 // TODO: add file format check in order to prevent decompression of a uncompressed file
+// TODO: check null variables
+// TODO: change queues from compression/decompression to Dictionary<int, object> and convert the object to the appropriate data type (Byte[] of GZipBlock)
+// TODO: remove lock() comments, it's unnecessary
 
 namespace GZipTest
 {
@@ -287,7 +290,7 @@ namespace GZipTest
         #endregion
 
         #region THREADS DEFINITION
-        // Thread: Universal thread that reads the specified (un)compressed file and puts each read block to the (de)compression queue
+        // Thread: Universal file read function
         private static void FileReadThread(object parameter)
         {
             // Resetting "file is read" flag
@@ -334,98 +337,97 @@ namespace GZipTest
                         }
 
                         Int64 bytesRead; // Number of bytes read from the input file
-                        switch (CompressionMode)
+                        if (CompressionMode == CompressionMode.Compress)
                         {
-                            case CompressionMode.Compress:
-                                #region Reading uncompressed file for compression
-                                // Calculating read buffer size
-                                Int64 bufferSize;
+                            #region Reading uncompressed file for compression
+                            // Calculating read buffer size
+                            Int64 bufferSize;
 
-                                // It the residual lenght of the file is less than the predefined read buffer size
-                                if ((inputStream.Length - inputStream.Position) < s_compressionBlockSize)
-                                {
-                                    // Set the actual buffer size to the residual lenght of the file
-                                    bufferSize = (Int32)(inputStream.Length - inputStream.Position);
-                                }
-                                // If the residual lenght of the file is greather or equal to the predefined read buffer size
-                                else
-                                {
-                                    // Use the predefined buffer size
-                                    bufferSize = s_compressionBlockSize;
-                                }
+                            // It the residual lenght of the file is less than the predefined read buffer size
+                            if ((inputStream.Length - inputStream.Position) < s_compressionBlockSize)
+                            {
+                                // Set the actual buffer size to the residual lenght of the file
+                                bufferSize = (Int32)(inputStream.Length - inputStream.Position);
+                            }
+                            // If the residual lenght of the file is greather or equal to the predefined read buffer size
+                            else
+                            {
+                                // Use the predefined buffer size
+                                bufferSize = s_compressionBlockSize;
+                            }
 
-                                // Handling calculations error
-                                if (bufferSize <= 0)
-                                {
-                                    throw new IndexOutOfRangeException("Unable to calculate read block size. Current position in the input stream might be beyond the end of the input file.");
-                                }
+                            // Handling calculations error
+                            if (bufferSize <= 0)
+                            {
+                                throw new IndexOutOfRangeException("Unable to calculate read block size. Current position in the input stream might be beyond the end of the input file.");
+                            }
 
-                                // Allocating read buffer and reading a block from the file                        
-                                Byte[] buffer = new Byte[bufferSize];
-                                bytesRead = inputStream.Read(buffer, 0, buffer.Length);
+                            // Allocating read buffer and reading a block from the file                        
+                            Byte[] buffer = new Byte[bufferSize];
+                            bytesRead = inputStream.Read(buffer, 0, buffer.Length);
 
-                                // If no bytes has been read or if the number of actually read bytes doesn't match the expected number of bytes
-                                if (bytesRead <= 0 ||
-                                    bytesRead != bufferSize)
-                                {
-                                    // Assuming an error 
-                                    throw new InvalidDataException("An attemp to read from input file stream has returned unexpected number of read bytes.");
-                                }
+                            // If no bytes has been read or if the number of actually read bytes doesn't match the expected number of bytes
+                            if (bytesRead <= 0 ||
+                                bytesRead != bufferSize)
+                            {
+                                // Assuming an error 
+                                throw new InvalidDataException("An attemp to read from input file stream has returned unexpected number of read bytes.");
+                            }
 
-                                // Locking the compression queue from being accessed by worker threads
-                                lock (s_queueCompressionLocker)
-                                {
-                                    // Adding the read block to the compression queue
-                                    QueueCompression.Add(s_readSequenceNumber, buffer);
-                                }
-                                #endregion
-                                break;
+                            // Locking the compression queue from being accessed by worker threads
+                            lock (s_queueCompressionLocker)
+                            {
+                                // Adding the read block to the compression queue
+                                QueueCompression.Add(s_readSequenceNumber, buffer);
+                            }
+                            #endregion
+                        }
+                        else if (CompressionMode == CompressionMode.Decompress)
+                        {
+                            #region Reading compressed file for decompression
+                            //Creating GZip-compressed block object
+                            CGZipBlock gZipBlock = new CGZipBlock();
 
-                            case CompressionMode.Decompress:
-                                #region Reading compressed file for decompression
-                                //Creating GZip-compressed block object
-                                CGZipBlock gZipBlock = new CGZipBlock();
+                            // Allocating buffer and reading metadata form the input file
+                            Byte[] metadataBuffer = new byte[CGZipBlock.MetadataSize];
+                            bytesRead = inputStream.Read(metadataBuffer, 0, metadataBuffer.Length);
 
-                                // Allocating buffer and reading metadata form the input file
-                                Byte[] metadataBuffer = new byte[CGZipBlock.MetadataSize];
-                                bytesRead = inputStream.Read(metadataBuffer, 0, metadataBuffer.Length);
+                            // If no bytes has been read or if the number of actually read bytes doesn't match the expected number of bytes
+                            if (bytesRead <= 0 ||
+                                bytesRead != CGZipBlock.MetadataSize)
+                            {
+                                // Assuming an error 
+                                throw new InvalidDataException("An attemp to read compressed block's metadate from the input file stream has returned unexpected number of read bytes.");
+                            }
 
-                                // If no bytes has been read or if the number of actually read bytes doesn't match the expected number of bytes
-                                if (bytesRead <= 0 ||
-                                    bytesRead != CGZipBlock.MetadataSize)
-                                {
-                                    // Assuming an error 
-                                    throw new InvalidDataException("An attemp to read compressed block's metadate from the input file stream has returned unexpected number of read bytes.");
-                                }
+                            // Initializing GZip-compressed block object with metadata
+                            gZipBlock.InitializeWithMetadata(metadataBuffer);
 
-                                // Initializing GZip-compressed block object with metadata
-                                gZipBlock.InitializeWithMetadata(metadataBuffer);
+                            // Allocating buffer and reading compressed block from the input file
+                            Byte[] compressedDataBuffer = new Byte[gZipBlock.DataSizeCompressed];
+                            bytesRead = inputStream.Read(compressedDataBuffer, 0, compressedDataBuffer.Length);
 
-                                // Allocating buffer and reading compressed block from the input file
-                                Byte[] compressedDataBuffer = new Byte[gZipBlock.DataSizeCompressed];
-                                bytesRead = inputStream.Read(compressedDataBuffer, 0, compressedDataBuffer.Length);
+                            // If no bytes has been read or if the number of actually read bytes doesn't match the expected number of bytes
+                            if (bytesRead <= 0 ||
+                                bytesRead != gZipBlock.DataSizeCompressed)
+                            {
+                                // Assuming an error 
+                                throw new InvalidDataException("An attemp to read compressed block from the input file stream has returned unexpected number of read bytes.");
+                            }
 
-                                // If no bytes has been read or if the number of actually read bytes doesn't match the expected number of bytes
-                                if (bytesRead <= 0 ||
-                                    bytesRead != gZipBlock.DataSizeCompressed)
-                                {
-                                    // Assuming an error 
-                                    throw new InvalidDataException("An attemp to read compressed block from the input file stream has returned unexpected number of read bytes.");
-                                }
+                            // Assigning the read compressed block to the corresponding section of GZip-compressed block
+                            gZipBlock.Data = compressedDataBuffer;
 
-                                // Assigning the read compressed block to the corresponding section of GZip-compressed block
-                                gZipBlock.Data = compressedDataBuffer;
-
-                                // Locking the decompression queue from being accessed by worker threads
-                                lock (s_queueDecompressionLocker)
-                                {
-                                    QueueDecompression.Add(s_readSequenceNumber, gZipBlock);
-                                }
-                                #endregion
-                                break;
-
-                            default:
-                                throw new Exception("Unknown operations mode is specified");
+                            // Locking the decompression queue from being accessed by worker threads
+                            lock (s_queueDecompressionLocker)
+                            {
+                                QueueDecompression.Add(s_readSequenceNumber, gZipBlock);
+                            }
+                            #endregion
+                        }
+                        else
+                        {
+                            throw new Exception("Unknown operations mode is specified");
                         }
 
                         // Incrementing read sequence counter
@@ -449,7 +451,7 @@ namespace GZipTest
             s_isInputFileRead = true;
         }
 
-        // Thread: compressed file write function (threaded)
+        // Thread: Universal file write function
         private static void FileWriteThread(object parameter)
         {
             // Resetting "file is read" flag
@@ -480,24 +482,23 @@ namespace GZipTest
                         // Checking if there's any data in output queue that ready to be written
                         // Locking the file write queue from being accessed by worker threads
                         Int32 writeQueueItemsCount;
-                        switch (CompressionMode)
+                        if (CompressionMode == CompressionMode.Compress)
                         {
-                            case CompressionMode.Compress:
-                                lock (s_queueCompressedWriteLocker)
-                                {
-                                    writeQueueItemsCount = QueueCompressedWrite.Count;
-                                }
-                                break;
-
-                            case CompressionMode.Decompress:
-                                lock (s_queueDecompressedWriteLocker)
-                                {
-                                    writeQueueItemsCount = QueueDecompressedWrite.Count;
-                                }
-                                break;
-
-                            default:
-                                throw new Exception();
+                            lock (s_queueCompressedWriteLocker)
+                            {
+                                writeQueueItemsCount = QueueCompressedWrite.Count;
+                            }
+                        }
+                        else if (CompressionMode == CompressionMode.Decompress)
+                        {
+                            lock (s_queueDecompressedWriteLocker)
+                            {
+                                writeQueueItemsCount = QueueDecompressedWrite.Count;
+                            }
+                        }
+                        else
+                        {
+                            throw new Exception("Unknown operations mode is specified");
                         }
 
                         // If the number of blocks in the write queue is greatherthan maximum allowed
@@ -525,24 +526,23 @@ namespace GZipTest
 
                         // Checking if there's a block of output data with the same sequence number as the write sequence number
                         Boolean isContainsWriteSequenceNumber = false;
-                        switch (CompressionMode)
+                        if (CompressionMode == CompressionMode.Compress)
                         {
-                            case CompressionMode.Compress:
-                                lock (s_queueCompressedWriteLocker)
-                                {
-                                    isContainsWriteSequenceNumber = QueueCompressedWrite.ContainsKey(s_writeSequenceNumber);
-                                }
-                                break;
-
-                            case CompressionMode.Decompress:
-                                lock (s_queueDecompressedWriteLocker)
-                                {
-                                    isContainsWriteSequenceNumber = QueueDecompressedWrite.ContainsKey(s_writeSequenceNumber);
-                                }
-                                break;
-
-                            default:
-                                throw new Exception();
+                            lock (s_queueCompressedWriteLocker)
+                            {
+                                isContainsWriteSequenceNumber = QueueCompressedWrite.ContainsKey(s_writeSequenceNumber);
+                            }
+                        }
+                        else if (CompressionMode == CompressionMode.Decompress)
+                        {
+                            lock (s_queueDecompressedWriteLocker)
+                            {
+                                isContainsWriteSequenceNumber = QueueDecompressedWrite.ContainsKey(s_writeSequenceNumber);
+                            }
+                        }
+                        else
+                        {
+                            throw new Exception("Unknown operations mode is specified");
                         }
                         
                         if (!isContainsWriteSequenceNumber)
@@ -559,32 +559,30 @@ namespace GZipTest
                         else
                         {
                             Byte[] buffer;
-                            switch (CompressionMode)
+                            if (CompressionMode == CompressionMode.Compress)
                             {
-                                case CompressionMode.Compress:
-                                    // Locking the write queue from being accessed by worker threads
-                                    CGZipBlock compressedBlock;
-                                    lock (s_queueCompressedWriteLocker)
-                                    {
-                                        // Moving a compressed block from write queue to local "buffer"
-                                        compressedBlock = QueueCompressedWrite[s_writeSequenceNumber];
-                                        QueueCompressedWrite.Remove(s_writeSequenceNumber);
-                                    }
+                                CGZipBlock compressedBlock;
+                                lock (s_queueCompressedWriteLocker)
+                                {
+                                    // Moving a compressed block from write queue to local "buffer"
+                                    compressedBlock = QueueCompressedWrite[s_writeSequenceNumber];
+                                    QueueCompressedWrite.Remove(s_writeSequenceNumber);
+                                }
 
-                                    // Converting GZip-block object to byte array to be able to write it to the output file
-                                    buffer = compressedBlock.ToByteArray();
-                                    break;
-
-                                case CompressionMode.Decompress:
-                                    lock (s_queueDecompressedWriteLocker)
-                                    {
-                                        buffer = QueueDecompressedWrite[s_writeSequenceNumber];
-                                        QueueDecompressedWrite.Remove(s_writeSequenceNumber);
-                                    }
-                                    break;
-
-                                default:
-                                    throw new Exception();
+                                // Converting GZip-block object to byte array to be able to write it to the output file
+                                buffer = compressedBlock.ToByteArray();
+                            }
+                            else if (CompressionMode == CompressionMode.Decompress)
+                            {
+                                lock (s_queueDecompressedWriteLocker)
+                                {
+                                    buffer = QueueDecompressedWrite[s_writeSequenceNumber];
+                                    QueueDecompressedWrite.Remove(s_writeSequenceNumber);
+                                }
+                            }
+                            else
+                            {
+                                throw new Exception("Unknown operations mode is specified");
                             }
                             
                             // Writing a GZip-block to the file
@@ -615,8 +613,8 @@ namespace GZipTest
             }
         }
 
-        // Threaded compression function
-        private static void BlockCompressionThread(object parameter)
+        // Thread: Universal block processing function
+        private static void BlockProcessingThread(object parameter)
         {
             if (IsEmergencyShutdown)
             {
@@ -625,97 +623,52 @@ namespace GZipTest
 
             try
             {
+                #region Checking argument
                 // Checking and receiving thread sequence number from input object
                 if (parameter == null)
                 {
-                    throw new ArgumentNullException("parameter", "Thread sequence number for Block Compression thread is null");
+                    throw new ArgumentNullException("parameter", "Thread sequence number for Block Processing thread is null.");
                 }
+
                 Int64 threadSequenceNumber = (Int64)parameter;
-
-                // Moving a block of uncompressed data from read queue to a local buffer
-                byte[] buffer;
-                lock (s_queueCompressionLocker)
+                if (threadSequenceNumber < 0)
                 {
-                    buffer = QueueCompression[threadSequenceNumber];
-                    QueueCompression.Remove(threadSequenceNumber);
+                    throw new ArgumentOutOfRangeException("Thread sequence number for Block Processing thread is less than 0.");
                 }
+                #endregion
 
-                // Retry memory allocation flag in case of memory shortage exception
-                Boolean isRetryMemoryAllocation = false;
-                do
+                // Allocating buffers for (de)compression modes
+                Byte[] buffer = new Byte[0]; // Input data buffer for compression mode
+                CGZipBlock gZipBlock = new CGZipBlock(); // Input compressed block for decompression mode
+
+                #region Retriving input data from read queue
+                // Compressing if requested
+                if (CompressionMode == CompressionMode.Compress)
                 {
-                    try
+                    // Locking the compression queue from being accessed by the file read thread
+                    lock (s_queueCompressionLocker)
                     {
-                        // Allocating memory stream to write to which from the uncompressed data buffer
-                        using (MemoryStream outputStream = new MemoryStream(buffer.Length))
-                        {
-                            using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
-                            {
-                                // compressing data
-                                compressionStream.Write(buffer, 0, buffer.Length);
-                            }
-                            
-                            // Placing compressed data in a special data block
-                            CGZipBlock compressedBlock = new CGZipBlock();
-                            compressedBlock.Data = outputStream.ToArray();
-                            compressedBlock.DataSizeUncompressed = buffer.Length;
-
-                            // Placing the block of data and metadata to the write queue
-                            lock (s_queueCompressedWriteLocker)
-                            {
-                                QueueCompressedWrite.Add(threadSequenceNumber, compressedBlock);
-                            }
-                            
-                        }
+                        // Moving a block of uncompressed data from read queue to a local buffer
+                        buffer = QueueCompression[threadSequenceNumber];
+                        QueueCompression.Remove(threadSequenceNumber);
                     }
-                    catch (OutOfMemoryException)
+                }
+                // Decompressing if requested
+                else if (CompressionMode == CompressionMode.Decompress)
+                {
+                    // Getting unprocessed data from read queue to internal buffer
+                    lock (s_queueDecompressionLocker)
                     {
-                        isRetryMemoryAllocation = true;
-                        Thread.Sleep(10000); // TODO: replace with a signal from another thread
-
+                        // Moving a block of compressed data from read queue to a local buffer
+                        gZipBlock = QueueDecompression[threadSequenceNumber];
+                        QueueDecompression.Remove(threadSequenceNumber);
                     }
-                } while (isRetryMemoryAllocation);
-
-
-            }
-            catch (ThreadAbortException)
-            {
-                // No need to spoil probably existing emergency shutdown message
-                IsEmergencyShutdown = true;
-            }
-            catch (Exception ex)
-            {
-                IsEmergencyShutdown = true;
-                s_emergencyShutdownMessage = String.Format("An unhandled exception in Block Compression thread caused the process to stop: {0}", ex.Message);
-            }
-        }
-
-        // Threaded decompression function
-        private static void BlockDecompressionThread(object parameter)
-        {
-            if (IsEmergencyShutdown)
-            {
-                return;
-            }
-
-            try
-            {
-                // Checking and receiving the parameter
-                if (parameter == null)
-                {
-                    throw new ArgumentNullException("parameter", "Thread sequence number for Block Decompression thread is null");
                 }
-                Int64 threadSequenceNumber = (Int64)parameter;
-
-                // Getting unprocessed data from read queue to internal buffer
-                CGZipBlock gZipBlock;
-                lock (s_queueDecompressionLocker)
+                else
                 {
-                    gZipBlock = QueueDecompression[threadSequenceNumber];
-                    QueueDecompression.Remove(threadSequenceNumber);
+                    throw new Exception("Unknown operations mode is specified");
                 }
-
-                // TODO: check if the block is correct (data != null, sizes > 0)
+                #endregion
 
                 // Retry memory allocation flag in case of OutOfMemory exception
                 Boolean isRetryMemoryAllocation = false;
@@ -723,44 +676,90 @@ namespace GZipTest
                 {
                     try
                     {
-                        // Creating memory stream from unprocessed data
-                        using (MemoryStream inputStream = new MemoryStream(gZipBlock.Data))
+                        #region Processing the received block
+                        if (CompressionMode == CompressionMode.Compress)
                         {
-                            Int32 bytesRead;
-
-                            // Allocating output buffer according to pre-defined chunk size
-                            Byte[] outputBuffer = new Byte[gZipBlock.DataSizeUncompressed];
-                            using (GZipStream gZipStream = new GZipStream(inputStream, CompressionMode.Decompress))
+                            // Allocating memory stream that will receive the compressed data block
+                            using (MemoryStream outputStream = new MemoryStream(buffer.Length))
                             {
-                                bytesRead = gZipStream.Read(outputBuffer, 0, outputBuffer.Length);
-                            }
-                            // TODO: compare expected and actual bytes read
+                                // Compressing the data block
+                                using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
+                                {
+                                    compressionStream.Write(buffer, 0, buffer.Length);
+                                }
 
-                            // Putting processed data block to File Write thread
-                            lock (s_queueDecompressedWriteLocker)
-                            {
-                                QueueDecompressedWrite.Add(threadSequenceNumber, outputBuffer);
+                                // Storing the compressed data block in a GZip block object with metadata
+                                CGZipBlock compressedBlock = new CGZipBlock();
+                                compressedBlock.Data = outputStream.ToArray();
+                                compressedBlock.DataSizeUncompressed = buffer.Length;
+
+                                // Locking the output data queue from being accessed by the file write thread
+                                lock (s_queueCompressedWriteLocker)
+                                {
+                                    // Placing the block of data and metadata to the write queue
+                                    QueueCompressedWrite.Add(threadSequenceNumber, compressedBlock);
+                                }
                             }
                         }
+                        else if (CompressionMode == CompressionMode.Decompress)
+                        {
+                            // Creating memory stream from unprocessed data
+                            using (MemoryStream inputStream = new MemoryStream(gZipBlock.Data))
+                            {
+                                Int32 bytesRead;
+
+                                // Allocating output buffer according to pre-defined chunk size
+                                Byte[] outputBuffer = new Byte[gZipBlock.DataSizeUncompressed];
+                                if (outputBuffer.Length <= 0)
+                                {
+                                    throw new ArgumentOutOfRangeException("Uncompressed data buffer's size is less or equal to 0.");
+                                }
+
+                                // Decompressing the data block
+                                using (GZipStream gZipStream = new GZipStream(inputStream, CompressionMode.Decompress))
+                                {
+                                    bytesRead = gZipStream.Read(outputBuffer, 0, outputBuffer.Length);
+                                }
+                                if (bytesRead <= 0 ||
+                                    bytesRead != outputBuffer.Length)
+                                {
+                                    // Assuming an error 
+                                    throw new InvalidDataException("An attemp to read from compressed data block has returned unexpected number of read bytes.");
+                                }
+
+                                // Locking the output data queue from being accessed by the file write thread
+                                lock (s_queueDecompressedWriteLocker)
+                                {
+                                    // Putting processed data block to File Write queue
+                                    QueueDecompressedWrite.Add(threadSequenceNumber, outputBuffer);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            throw new Exception("Unknown operations mode is specified");
+                        }
+                        #endregion
                     }
                     catch (OutOfMemoryException)
                     {
-                        // Handling OutOfMemory exception with wait and retry
+                        // Handling OutOfMemory exception with sleep and retry
                         isRetryMemoryAllocation = true;
                         Thread.Sleep(10000); // TODO: replace with a signal from another thread
+
                     }
                 } while (isRetryMemoryAllocation);
             }
-
             catch (ThreadAbortException)
             {
-                // No need to spoil probably existing emergency shutdown message
+                // No need to overwrite probably existing emergency shutdown message, just setting the emergency shutdown flag
                 IsEmergencyShutdown = true;
             }
             catch (Exception ex)
             {
+                // Setting the emergency shutdown flag and generating error message
                 IsEmergencyShutdown = true;
-                s_emergencyShutdownMessage = String.Format("An unhandled exception in Block Decompression thread caused the process to stop: {0}", ex.Message);
+                s_emergencyShutdownMessage = String.Format("An unhandled exception in Block Compression thread caused the process to stop: {0}", ex.Message);
             }
         }
 
@@ -821,46 +820,47 @@ namespace GZipTest
                     // If there's less than maximum allowed threads are running, spawn a new one                    
                     if (WorkerThreads.Count < s_maxThreadsCount)
                     {
-                        switch (CompressionMode)
+                        // Initializing block processing thread
+                        Thread workerThread = new Thread(BlockProcessingThread);
+
+                        // Starting a compression thread
+                        if (CompressionMode == CompressionMode.Compress)
                         {
-                            case CompressionMode.Compress:
-                                lock (s_queueCompressionLocker)
+                            lock (s_queueCompressionLocker)
+                            {
+                                foreach (Int64 threadSequenceNumber in QueueCompression.Keys)
                                 {
-                                    foreach (Int64 threadSequenceNumber in QueueCompression.Keys)
+                                    if (!WorkerThreads.ContainsKey(threadSequenceNumber))
                                     {
-                                        if (!WorkerThreads.ContainsKey(threadSequenceNumber))
-                                        {
-                                            Thread workerThread = new Thread(BlockCompressionThread);
-                                            workerThread.Name = String.Format("Block compression (seq: {0})", threadSequenceNumber);
-                                            WorkerThreads.Add(threadSequenceNumber, workerThread);
-                                            WorkerThreads[threadSequenceNumber].Start(threadSequenceNumber);
-                                            break;
-                                        }
+                                        workerThread.Name = String.Format("Block compression (seq: {0})", threadSequenceNumber);
+                                        WorkerThreads.Add(threadSequenceNumber, workerThread);
+                                        WorkerThreads[threadSequenceNumber].Start(threadSequenceNumber);
+                                        break;
                                     }
                                 }
-                                break;
-
-                            case CompressionMode.Decompress:
-                                lock (s_queueDecompressionLocker)
+                            }
+                        }
+                        // Starting a decompression thread
+                        else if (CompressionMode == CompressionMode.Decompress)
+                        {
+                            lock (s_queueDecompressionLocker)
+                            {
+                                foreach (Int64 threadSequenceNumber in QueueDecompression.Keys)
                                 {
-                                    foreach (Int64 threadSequenceNumber in QueueDecompression.Keys)
+                                    if (!WorkerThreads.ContainsKey(threadSequenceNumber))
                                     {
-                                        if (!WorkerThreads.ContainsKey(threadSequenceNumber))
-                                        {
-                                            // Spawn a corresponding thread according to the selected operations mode
-                                            Thread workerThread = new Thread(BlockDecompressionThread);
-                                            workerThread.Name = String.Format("Block decompression (seq: {0})", threadSequenceNumber);
-                                            WorkerThreads.Add(threadSequenceNumber, workerThread);
-                                            WorkerThreads[threadSequenceNumber].Start(threadSequenceNumber);
-                                            break;
-                                        }
+                                        workerThread.Name = String.Format("Block decompression (seq: {0})", threadSequenceNumber);
+                                        WorkerThreads.Add(threadSequenceNumber, workerThread);
+                                        WorkerThreads[threadSequenceNumber].Start(threadSequenceNumber);
+                                        break;
                                     }
                                 }
-                                break;
-
-                            default:
-                                throw new Exception("Unknown operations mode is specified");
-                        }                        
+                            }
+                        }
+                        else
+                        {
+                            throw new Exception("Unknown operations mode is specified");
+                        } 
                     }
                     else
                     {
@@ -967,20 +967,19 @@ namespace GZipTest
                 // Initializing input file read and write threads
                 s_inputFileReadThread = new Thread(FileReadThread);
                 s_outputFileWriteThread = new Thread(FileWriteThread);
-                switch (CompressionMode)
+                if (CompressionMode == CompressionMode.Compress)
                 {
-                    case CompressionMode.Compress:
-                        s_inputFileReadThread.Name = "Uncompressed file reader";
-                        s_outputFileWriteThread.Name = "Compressed file writer";
-                        break;
-
-                    case CompressionMode.Decompress:
-                        s_inputFileReadThread.Name = "Compressed file reader";
-                        s_outputFileWriteThread.Name = "Decompressed file writer";
-                        break;
-
-                    default:
-                        throw new Exception("Unknown operations mode is specified");
+                    s_inputFileReadThread.Name = "Uncompressed file reader";
+                    s_outputFileWriteThread.Name = "Compressed file writer";
+                }
+                else if (CompressionMode == CompressionMode.Decompress)
+                {
+                    s_inputFileReadThread.Name = "Compressed file reader";
+                    s_outputFileWriteThread.Name = "Decompressed file writer";
+                }
+                else
+                {
+                    throw new Exception("Unknown operations mode is specified");
                 }
 
                 // Starting previously initialized input file read thread
