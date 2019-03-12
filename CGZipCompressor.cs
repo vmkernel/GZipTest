@@ -4,11 +4,10 @@ using System.IO;
 using System.IO.Compression;
 using System.Threading;
 
-// TODO: add file format check in order to prevent decompression of a uncompressed file
-// TODO: check null variables
-// TODO: change queues from compression/decompression to Dictionary<int, object> and convert the object to the appropriate data type (Byte[] of GZipBlock)
-// TODO: remove lock() comments, it's unnecessary
 // TODO: check if ThreadAbortException enought to get rid of the thread abort variable check within threads
+// TODO: change queues from compression/decompression to Dictionary<int, object> and convert the object to the appropriate data type (Byte[] of GZipBlock)
+// TODO: check null variables
+// TODO: add file format check in order to prevent decompression of a uncompressed file
 
 namespace GZipTest
 {
@@ -315,7 +314,6 @@ namespace GZipTest
                         s_signalOutputDataQueueReady.WaitOne();
 
                         // Throttling read of the file to avoid memory drain (controlled by s_maxReadQueueLength variable)
-                        // Locking the compression queue from being accessed by worker threads
                         Int32 readQueueItemsCount;
                         lock (s_queueCompressionLocker)
                         {
@@ -370,7 +368,6 @@ namespace GZipTest
                                 throw new InvalidDataException("An attemp to read from input file stream has returned unexpected number of read bytes.");
                             }
 
-                            // Locking the compression queue from being accessed by worker threads
                             lock (s_queueCompressionLocker)
                             {
                                 // Adding the read block to the compression queue
@@ -414,9 +411,9 @@ namespace GZipTest
                             // Assigning the read compressed block to the corresponding section of GZip-compressed block
                             gZipBlock.Data = compressedDataBuffer;
 
-                            // Locking the decompression queue from being accessed by worker threads
                             lock (s_queueDecompressionLocker)
                             {
+                                // Adding the read block to the decompression queue
                                 QueueDecompression.Add(s_readSequenceNumber, gZipBlock);
                             }
                             #endregion
@@ -471,7 +468,6 @@ namespace GZipTest
                     while (!s_isOutputFileWritten) // Don't required, but it's a good fail-safe measure instead of using "while (true)"
                     {
                         // Checking if there's any data in output queue that ready to be written
-                        // Locking the file write queue from being accessed by worker threads
                         Int32 writeQueueItemsCount;
                         if (CompressionMode == CompressionMode.Compress)
                         {
@@ -631,7 +627,6 @@ namespace GZipTest
                 // Compressing if requested
                 if (CompressionMode == CompressionMode.Compress)
                 {
-                    // Locking the compression queue from being accessed by the file read thread
                     lock (s_queueCompressionLocker)
                     {
                         // Moving a block of uncompressed data from read queue to a local buffer
@@ -679,7 +674,6 @@ namespace GZipTest
                                 compressedBlock.Data = outputStream.ToArray();
                                 compressedBlock.DataSizeUncompressed = buffer.Length;
 
-                                // Locking the output data queue from being accessed by the file write thread
                                 lock (s_queueCompressedWriteLocker)
                                 {
                                     // Placing the block of data and metadata to the write queue
@@ -713,7 +707,6 @@ namespace GZipTest
                                     throw new InvalidDataException("An attemp to read from compressed data block has returned unexpected number of read bytes.");
                                 }
 
-                                // Locking the output data queue from being accessed by the file write thread
                                 lock (s_queueDecompressedWriteLocker)
                                 {
                                     // Putting processed data block to File Write queue
