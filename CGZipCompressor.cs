@@ -8,6 +8,7 @@ using System.Threading;
 // TODO: check null variables
 // TODO: change queues from compression/decompression to Dictionary<int, object> and convert the object to the appropriate data type (Byte[] of GZipBlock)
 // TODO: remove lock() comments, it's unnecessary
+// TODO: check if ThreadAbortException enought to get rid of the thread abort variable check within threads
 
 namespace GZipTest
 {
@@ -296,11 +297,6 @@ namespace GZipTest
             // Resetting "file is read" flag
             s_isInputFileRead = false;
 
-            if (IsEmergencyShutdown)
-            {
-                return;
-            }
-
             try
             {
                 // Checking file path parameter and converting it from object to string
@@ -457,11 +453,6 @@ namespace GZipTest
             // Resetting "file is read" flag
             s_isOutputFileWritten = false;
 
-            if (IsEmergencyShutdown)
-            {
-                return;
-            }
-
             try
             {
                 // Checking file path parameter and converting it from object to string
@@ -616,11 +607,6 @@ namespace GZipTest
         // Thread: Universal block processing function
         private static void BlockProcessingThread(object parameter)
         {
-            if (IsEmergencyShutdown)
-            {
-                return;
-            }
-
             try
             {
                 #region Checking argument
@@ -766,39 +752,19 @@ namespace GZipTest
         // Threaded threads dispatcher that starts worker threads and limits their number
         private static void WorkerThreadsDispatcherThread()
         {
-            if (IsEmergencyShutdown == true)
-            {
-                return;
-            }
+            // Resetting "all data has been processed" flag
+            s_isDataProcessingDone = false;
 
+            // Declaring one of the variables that is used to trigger exit from do-while look
             Int32 readQueueCount = 0;
             try
             {
                 do
                 {
-                    // Killing all running threads is emergency shutdown is requested
-                    if (IsEmergencyShutdown == true)
-                    {
-                        if (WorkerThreads.Count > 0)
-                        {
-                            foreach (Int32 threadSequenceNumber in WorkerThreads.Keys)
-                            {
-                                if (WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.Background ||
-                                    WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.Running ||
-                                    WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.Suspended ||
-                                    WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.WaitSleepJoin)
-                                {
-                                    WorkerThreads[threadSequenceNumber].Abort();
-                                }
-                            }
-                        }
-
-                        return;
-                    }
-
-                    // Looking for finished threads
+                    #region Removing finished treads from the pool
                     if (WorkerThreads.Count > 0)
                     {
+                        // Looking for finished threads and removing them from the pool
                         List<Int32> finishedThreads = new List<Int32>();
                         foreach (Int32 threadSequenceNumber in WorkerThreads.Keys)
                         {
@@ -812,26 +778,31 @@ namespace GZipTest
                         // If any finished threads has been found
                         foreach (Int32 threadSequenceNumber in finishedThreads)
                         {
-                            // Removing all of them
+                            // Removing all of them from the pool
                             WorkerThreads.Remove(threadSequenceNumber);
                         }
                     }
+                    #endregion
 
                     // If there's less than maximum allowed threads are running, spawn a new one                    
                     if (WorkerThreads.Count < s_maxThreadsCount)
                     {
-                        // Initializing block processing thread
+                        #region Starting a new block processing thread
+                        // Declaring a block processing thread
                         Thread workerThread = new Thread(BlockProcessingThread);
 
-                        // Starting a compression thread
                         if (CompressionMode == CompressionMode.Compress)
                         {
+                            // Starting a block processing thread in compression mode
                             lock (s_queueCompressionLocker)
                             {
+                                // Going through all sequence numbers in the block processin queue
                                 foreach (Int64 threadSequenceNumber in QueueCompression.Keys)
                                 {
+                                    // If there's no running thread for the corrsponding block sequence number in the tread pool
                                     if (!WorkerThreads.ContainsKey(threadSequenceNumber))
                                     {
+                                        // Starting a new block processing thread for the corresponding block
                                         workerThread.Name = String.Format("Block compression (seq: {0})", threadSequenceNumber);
                                         WorkerThreads.Add(threadSequenceNumber, workerThread);
                                         WorkerThreads[threadSequenceNumber].Start(threadSequenceNumber);
@@ -840,15 +811,18 @@ namespace GZipTest
                                 }
                             }
                         }
-                        // Starting a decompression thread
                         else if (CompressionMode == CompressionMode.Decompress)
                         {
+                            // Starting a block processing thread in decompression mode
                             lock (s_queueDecompressionLocker)
                             {
+                                // Going through all sequence numbers in the block processin queue
                                 foreach (Int64 threadSequenceNumber in QueueDecompression.Keys)
                                 {
+                                    // If there's no running thread for the corrsponding block sequence number in the tread pool
                                     if (!WorkerThreads.ContainsKey(threadSequenceNumber))
                                     {
+                                        // Starting a new block processing thread for the corresponding block
                                         workerThread.Name = String.Format("Block decompression (seq: {0})", threadSequenceNumber);
                                         WorkerThreads.Add(threadSequenceNumber, workerThread);
                                         WorkerThreads[threadSequenceNumber].Start(threadSequenceNumber);
@@ -860,7 +834,8 @@ namespace GZipTest
                         else
                         {
                             throw new Exception("Unknown operations mode is specified");
-                        } 
+                        }
+                        #endregion
                     }
                     else
                     {
@@ -875,21 +850,43 @@ namespace GZipTest
                         readQueueCount = QueueCompression.Count;
                     }
 
+                    // Triggering thread management loop exit when
+                    // * Input file has been read
+                    // * Read queue is empty
+                    // * There's no running block processing threads
                 } while (!s_isInputFileRead ||
                          WorkerThreads.Count > 0 ||
                          readQueueCount > 0);
             }
             catch (ThreadAbortException)
             {
-                // No need to spoil probably existing emergency shutdown message
+                // No need to overwrite probably existing emergency shutdown message, just setting the emergency shutdown flag
                 IsEmergencyShutdown = true;
+
+                #region Sending Abort() signal to all running threads if emergency shutdown is requested
+                if (WorkerThreads.Count > 0)
+                {
+                    foreach (Int32 threadSequenceNumber in WorkerThreads.Keys)
+                    {
+                        if (WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.Background ||
+                            WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.Running ||
+                            WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.Suspended ||
+                            WorkerThreads[threadSequenceNumber].ThreadState == ThreadState.WaitSleepJoin)
+                        {
+                            WorkerThreads[threadSequenceNumber].Abort();
+                        }
+                    }
+                }
+                #endregion
             }
             catch (Exception ex)
             {
+                // Setting the emergency shutdown flag and generating error message
                 IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception in Worker Threads Dispatcher thread caused the process to stop: {0}", ex.Message);
             }
 
+            // Setting "all data has been processed" flag
             s_isDataProcessingDone = true;
         }
         #endregion
@@ -898,11 +895,6 @@ namespace GZipTest
         // Initialize internal variables
         private static void Initialize()
         {
-            if (IsEmergencyShutdown)
-            {
-                return;
-            }
-
             try
             {
                 // Initializing threads
@@ -910,13 +902,8 @@ namespace GZipTest
                 s_inputFileReadThread = null;
                 s_outputFileWriteThread = null;
 
-                // Initializing flags
-                s_isInputFileRead = false;
-                s_isDataProcessingDone = false;
-                s_isOutputFileWritten = false;
+                // Initializing emergency shutdown
                 IsEmergencyShutdown = false;
-
-                // Cleaning emergency shutdown message
                 s_emergencyShutdownMessage = "";
 
                 // Resetting sequence numbers
@@ -942,6 +929,7 @@ namespace GZipTest
             }
             catch (Exception ex)
             {
+                // Setting the emergency shutdown flag and generating error message
                 IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception during compression module initialization caused the process to stop: {0}", ex.Message);
             }
@@ -993,7 +981,7 @@ namespace GZipTest
                        !s_isDataProcessingDone ||
                        !s_isOutputFileWritten)
                 {
-                    // Killing all the threads that was started here if emergency shutdown is requested
+                    // Killing all the threads that has been started if emergency shutdown is requested
                     if (IsEmergencyShutdown)
                     {
                         if (s_inputFileReadThread != null)
@@ -1019,6 +1007,7 @@ namespace GZipTest
             }
             catch (Exception ex)
             {
+                // Setting the emergency shutdown flag and generating error message
                 IsEmergencyShutdown = true;
                 s_emergencyShutdownMessage = String.Format("An unhandled exception in compression method caused the process to stop: {0}", ex.Message);
             }
