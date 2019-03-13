@@ -1,125 +1,136 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.IO;
 using System.IO.Compression;
-using System.Threading;
 
 namespace GZipTest
 {
     class Program
     {
-        // Threads count according to CPU cores count
-        static int _threadCount;
-
-        // Data buffer which is shared between threads
-        static byte[][] _srcBuffer;
-
-        // Destination data buffer which is shared between threads
-        static byte[][] _dstBuffer;
-
-        // Pool of threads
-        static Thread[] _threads;
-
-        // HARDCODE: size of a buffer per thread
-        static int _chunkSize = 512 * 1024 * 1024; // 512M per thread
-
-        // HARDCODE: name of source file to pack
-        static String _srcFileName = @"E:\Downloads\Movies\Mad.Max.Fury.Road.2015.1080p.BluRay.AC3.x264-ETRG.mkv";
-        //static String _srcFileName = @"D:\tmp\Iteration4-2x4CPU_16GB_RAM.blg";
-
-
-        // Threaded compression function
-        static public void BlockCompressionThread(object parameter)
+        static void PrintUsage()
         {
-            int threadIndex = (int)parameter;
-            using (MemoryStream outputStream = new MemoryStream(_srcBuffer[threadIndex].Length))
+            String appName;
+            if (String.IsNullOrEmpty(System.AppDomain.CurrentDomain.FriendlyName))
             {
-                using (GZipStream compressionStream = new GZipStream(outputStream, CompressionMode.Compress))
-                {
-                    compressionStream.Write(_srcBuffer[threadIndex], 0, _srcBuffer[threadIndex].Length);
-                }
-                _dstBuffer[threadIndex] = outputStream.ToArray();
+                appName = "app.exe";
             }
-        }
+            else
+            {
+                appName = System.AppDomain.CurrentDomain.FriendlyName;
+            }
+            String message = String.Format(
+                "\nThis program implements multi-threaded compresses and decompresses for a specified file using GZipStream class from .NET 3.5\n\n" +
+                "Usage:\n" +
+                "{0} MODE SOURCE DESTINATION\n\n" +
+                "MODEs:\n" +
+                "  compress – pack a file\n" + 
+                "    SOURCE - original file path\n" +
+                "    DESTINATION - compressed file path\n\n" + 
+                "  decompress – unpack an archive\n" + 
+                "    SOURCE - compressed file path\n" +
+                "    DESTINATION - decompressed file path\n\n" + 
+                "Examples:\n" +
+                "{0} compress \"c:\\Documents\\iis.log\" \"c:\\Documents\\iis.log.gz\"\n" +
+                "{0} decompress \"c:\\Documents\\iis.log.gz\" \"c:\\Documents\\iis.log\"\n\n",
+                appName);
 
+            Console.Write(message);
+        }
 
         static int Main(string[] args)
         {
-            // Init local variables
-            _threadCount = Environment.ProcessorCount;
-            _threads = new Thread[_threadCount];
+            String inputFilePath;
+            String outputFilePath;
 
-            FileInfo srcFileInfo = new FileInfo(_srcFileName);
-            String dstFileName = srcFileInfo.FullName + ".gz";
-
-            int bytesRead;
-            int bufferSize;
-            using (FileStream sourceStream = new FileStream(_srcFileName, FileMode.Open, FileAccess.Read))
+            try
             {
-                using (FileStream destinationStream = new FileStream(dstFileName, FileMode.Create))
+                #region Checking arguments
+                // If "help" is requested
+                if (args != null &&
+                    args.Length > 0 &&
+                    String.Compare(args[0], "help", true) == 0)
                 {
-                    while (sourceStream.Position < sourceStream.Length)
-                    {
-                        _srcBuffer = new byte[_threadCount][];
-                        _dstBuffer = new byte[_threadCount][];
+                    PrintUsage();
+                    return 0;
+                }
 
-                        for (int threadIndex = 0; threadIndex < _threadCount; threadIndex++)
-                        {
-                            if ((sourceStream.Length - sourceStream.Position) < _chunkSize)
-                            {
-                                bufferSize = (int)(sourceStream.Length - sourceStream.Position);
-                            }
-                            else
-                            {
-                                bufferSize = _chunkSize;
-                            }
+                if (args == null ||
+                    args.Length != 3)
+                {
+                    // If less or more than 3 arguments are specefied, print an error message
+                    String message = String.Format("Incorrect number of parameters (expected: 3, got {0})\n", args.Length);
+                    throw new ArgumentException(message);
+                }
 
-                            if (bufferSize <= 0)
-                            {
-                                break;
-                            }
+                // Checking operations mode switch
+                String mode = args[0];
+                if (String.Compare(mode, "compress", true) == 0)
+                {
+                    // Setting compression mode
+                    Console.WriteLine("Compression mode is specified.");
+                    CGZipCompressor.CompressionMode = CompressionMode.Compress;
+                }
+                else if (String.Compare(mode, "decompress", true) == 0)
+                {
+                    // Setting decompression mode
+                    Console.WriteLine("Decompression mode is specified.");
+                    CGZipCompressor.CompressionMode = CompressionMode.Decompress;
+                }
+                else
+                {
+                    // Unknown mode is spceified
+                    String message = String.Format("Incorrect mode specified (expected: \"compress\" or \"decompress\" or \"help\", got \"{0}\")\n", mode);
+                    throw new ArgumentException(message);
+                }
 
-                            _srcBuffer[threadIndex] = new byte[bufferSize];
-                            bytesRead = sourceStream.Read(_srcBuffer[threadIndex], 0, bufferSize);
+                // Checking input file
+                inputFilePath = args[1];
+                if (!File.Exists(inputFilePath))
+                {
+                    // Input file must exists
+                    String message = String.Format("Can't find the specified input file \"{0}\"\n", inputFilePath);
+                    throw new ArgumentException(message);
+                }
 
-                            _threads[threadIndex] = new Thread(BlockCompressionThread);
-                            _threads[threadIndex].Start(threadIndex);
-                        }
+                outputFilePath = args[2];
+                // TODO: uncomment
+                /* DEBUG
+                if (File.Exists(outputFilePath))
+                {
+                    // Output file mustn't exists
+                    String message = String.Format("The specified output file is already exists: \"{0}\"\n", outputFilePath);
+                    throw new ArgumentException(message);
+                }
+                */
+                #endregion
 
-                        // Waiting for all threads to exit
-                        Boolean bAllThreadsFinished;
-                        do
-                        {
-                            bAllThreadsFinished = true;
-                            for (int threadIndex = 0; threadIndex < _threadCount; threadIndex++)
-                            {
-                                if (_threads[threadIndex] != null && _threads[threadIndex].ThreadState == ThreadState.Running)
-                                {
-                                    bAllThreadsFinished = false;
-                                }
-                            }
+                #region Starting compression
+                Console.WriteLine("Working...");
+                CGZipCompressor.Run(inputFilePath, outputFilePath);
 
-                        } while (!bAllThreadsFinished);
+                if (CGZipCompressor.IsEmergencyShutdown)
+                {
+                    String message = String.Format("The compression process was aborted because of the following error: {0}", CGZipCompressor.EmergenceShutdownMessage);
+                    throw new Exception(message);
+                }
+                else
+                {
+                    Console.WriteLine("The process has been completed successfully");
+                    Console.WriteLine("\nPress ENTER to exit...");
+                    Console.ReadLine();
 
-                        // Writing results to the output file
-                        for (int threadIndex = 0; threadIndex < _threadCount; threadIndex++)
-                        {
-                            if ( _dstBuffer[threadIndex] != null && _dstBuffer[threadIndex].Length > 0)
-                            {
-                                destinationStream.Write(_dstBuffer[threadIndex], 0, _dstBuffer[threadIndex].Length);
-                            }
-                        }
-                    } // Advancing to the next block of data until the end of the source file
+                    return 0;
+                }
+                #endregion
+            }
+            catch (Exception ex)
+            {
+                String message = String.Format("\nERROR: {0}", ex.Message);
+                Console.WriteLine(message);
+                Console.WriteLine("\nPress ENTER to exit...");
+                Console.ReadLine();
 
-                } // using destinationStream
-
-            } // using sourceStream
-
-            Console.ReadLine();
-
-            return 0;
+                return 1;
+            }
         }
     }
 }
