@@ -5,7 +5,6 @@ using System.IO.Compression;
 using System.Threading;
 
 // TODO: check null variables
-// TODO: add file format check in order to prevent decompression of a uncompressed file
 
 namespace GZipTest
 {
@@ -36,10 +35,6 @@ namespace GZipTest
         #endregion
 
         #region FIELDS
-        // TODO: check gzipped block signature before decompressing a block
-        // First three bytes of a GZip file (compressed block) signature
-        //private static readonly Byte[] s_gZipFileSignature = new Byte[] { 0x1F, 0x8B, 0x08 };
-
         // Operations mode (compression or decompression)
         public static CompressionMode CompressionMode { get; set; }
 
@@ -214,6 +209,11 @@ namespace GZipTest
 
         // Is used for throttling input file read when output file write queue becames longer than specified in s_maxWriteQueueLength
         private static ManualResetEvent s_signalOutputDataQueueReady = new ManualResetEvent(false);
+
+        // Is used to signal to File Write thread that a new block of data is ready
+        private static ManualResetEvent s_signalNewBlockReady = new ManualResetEvent(false);
+        // Is used to lock the s_signalNewBlockReady signal while it is being set (by a Block Processing thread) or reset (by the File Write thread)
+        private static readonly Object s_signalNewBlockReadyLocker = new Object();
         #endregion
         #endregion
 
@@ -431,16 +431,16 @@ namespace GZipTest
                         {
                             isContainsWriteSequenceNumber = BlockWriteQueue.ContainsKey(s_writeSequenceNumber);
                         }
-                        
+
+                        // If there's no block with correct write sequence number in the queue, wait for the next block and go round the loop
                         if (!isContainsWriteSequenceNumber)
                         {
-                            // TODO: Implement suspend
-                            // If there's no block with correct write sequence number the the queue, wait for the next block and go round the loop
-                            //s_signalWorkerThreadReady.WaitOne();
-                            //lock (s_workerThreadReadySignalLocker)
-                            //{
-                            //    s_signalWorkerThreadReady.Reset();
-                            //}
+                            // Suspending the thread until a new block has been processed and is ready to be written to the output file
+                            s_signalNewBlockReady.WaitOne();
+                            lock (s_signalNewBlockReadyLocker)
+                            {
+                                s_signalNewBlockReady.Reset();
+                            }
                         }
                         // If there's a block with correct write sequence number, write it to the output file
                         else
@@ -481,9 +481,6 @@ namespace GZipTest
                             // Signalling to the file read thread that a block of data has been written to the ouput file
                             s_signalOutputDataWritten.Set();
                         }
-
-                        // TODO: replace with signalling
-                        Thread.Sleep(1000);
                     }
                 }
             }
@@ -618,13 +615,19 @@ namespace GZipTest
                         {
                             throw new Exception("Unknown operations mode is specified");
                         }
+
+                        // Signalling to the File Write thread that a new block of data has been processed and ready to be written
+                        lock (s_signalNewBlockReadyLocker)
+                        {
+                            s_signalNewBlockReady.Set();
+                        }
                         #endregion
                     }
                     catch (OutOfMemoryException)
                     {
                         // Handling OutOfMemory exception with sleep and retry
                         isRetryMemoryAllocation = true;
-                        Thread.Sleep(10000); // TODO: replace with a signal from another thread
+                        Thread.Sleep(10000);
 
                     }
                 } while (isRetryMemoryAllocation);
