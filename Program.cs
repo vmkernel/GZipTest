@@ -92,6 +92,7 @@ namespace GZipTest
                 }
 
                 outputFilePath = args[2];
+                // TODO: uncomment
                 /* DEBUG
                 if (File.Exists(outputFilePath))
                 {

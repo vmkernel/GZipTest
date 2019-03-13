@@ -4,7 +4,6 @@ using System.IO;
 using System.IO.Compression;
 using System.Threading;
 
-// TODO: check if ThreadAbortException enought to get rid of the thread abort variable check within threads
 // TODO: change queues from compression/decompression to Dictionary<int, object> and convert the object to the appropriate data type (Byte[] of GZipBlock)
 // TODO: check null variables
 // TODO: add file format check in order to prevent decompression of a uncompressed file
@@ -977,9 +976,9 @@ namespace GZipTest
                     // Killing all the threads that has been started if emergency shutdown is requested
                     if (IsEmergencyShutdown)
                     {
-                        if (s_inputFileReadThread != null)
+                        if (s_workerThreadsManagerThread != null)
                         {
-                            s_inputFileReadThread.Abort();
+                            s_workerThreadsManagerThread.Abort();
                         }
 
                         if (s_outputFileWriteThread != null)
@@ -987,11 +986,15 @@ namespace GZipTest
                             s_outputFileWriteThread.Abort();
                         }
 
-                        if (s_workerThreadsManagerThread != null)
+                        if (s_inputFileReadThread != null)
                         {
-                            s_workerThreadsManagerThread.Abort();
+                            s_inputFileReadThread.Abort();
                         }
 
+                        // Waiting for the threads to abort
+                        s_workerThreadsManagerThread.Join();
+                        s_outputFileWriteThread.Join();
+                        s_inputFileReadThread.Join();                      
                         break;
                     }
 
