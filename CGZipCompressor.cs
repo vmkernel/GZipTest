@@ -142,19 +142,32 @@ namespace GZipTest
         #endregion
 
         #region Block sequences management
-        // Read sequence number
-        // Indicates a sequence number of current block that has been read from an input file
+        /// <summary>
+        /// Read sequence number
+        /// Indicates a sequence number of current block that has been read from an input file
+        /// </summary>
         private static Int32 s_readSequenceNumber;
 
-        // Read sequence number
-        // Indicates a sequence number of current block that has to be written to an output file
+        /// <summary>
+        /// Write sequence number
+        /// Indicates a sequence number of current block that has to be written to an output file
+        /// </summary>
         private static Int32 s_writeSequenceNumber;
         #endregion
 
         #region Queues
         #region Universal block processing queue
-        // Stores blocks of data that has been read from an input file until they are picked up by a Block Processing thread
+        /// <summary>
+        /// Stores blocks of data that has been read from an input file until they are picked up by a Block Processing thread
+        /// If compression mode is selected then the Object represents a byte array (Byte[]) of uncompressed data that has been read from an input file
+        /// If decompression mode is selected then the Object represents a CGZipBlock object of compressed data with metadata that has been read from an input file
+        /// </summary>
         private static Dictionary<Int32, Object> s_blockProcessingQueue;
+        /// <summary>
+        /// Stores blocks of data that has been read from an input file until they are picked up by a Block Processing thread
+        /// If compression mode is selected then the Object represents a byte array (Byte[]) of uncompressed data
+        /// If decompression mode is selected then the Object represents a CGZipBlock object of compressed data
+        /// </summary>
         private static Dictionary<Int32, Object> BlockProcessingQueue
         {
             get
@@ -183,13 +196,24 @@ namespace GZipTest
             }
         }
 
-        // Block processing queue locker
+        /// <summary>
+        /// Block processing queue locker
+        /// </summary>
         private static readonly Object s_blockProcessingQueueLocker = new Object();
         #endregion
 
         #region Universal block write queue
-        // Stores processed blocks of data which are produced by Block Processing thread until they are picked up by the output file write thread
+        /// <summary>
+        /// Stores processed blocks of data which are produced by Block Processing thread, until they are picked up by the output file write thread
+        /// If compression mode is selected then the Object represents a CGZipBlock object of compressed data with metadata
+        /// If decompression mode is selected then the Object represents a byte array (Byte[]) of uncompressed data
+        /// </summary>
         private static Dictionary<Int32, Object> s_blockWriteQueue;
+        /// <summary>
+        /// Stores processed blocks of data which are produced by Block Processing thread, until they are picked up by the output file write thread
+        /// If compression mode is selected then the Object represents a CGZipBlock object of compressed data with metadata
+        /// If decompression mode is selected then the Object represents a byte array (Byte[]) of uncompressed data
+        /// </summary>
         private static Dictionary<Int32, Object> BlockWriteQueue
         {
             get
@@ -218,19 +242,27 @@ namespace GZipTest
             }
         }
 
-        // Block write queue locker
+        /// <summary>
+        /// Block write queue locker
+        /// </summary>
         private static readonly Object s_blockWriteQueueLocker = new Object();
         #endregion
         #endregion
 
         #region Flags
-        // Flag: the input file has been read and the file read thread has exited
+        /// <summary>
+        /// Indicates that an input file has been read to the end and the file read thread has exited
+        /// </summary>
         private static Boolean s_isInputFileRead;
 
-        // Flag: all input data blocks has been processed and all worker threads are terminated
+        /// <summary>
+        /// Indicates that all input data blocks has been processed and all worker threads are terminated
+        /// </summary>
         private static Boolean s_isDataProcessingDone;
 
-        // Flag: the output file has been written and file write thread has exited
+        /// <summary>
+        /// Indicates that the output file has been written and file write thread has exited
+        /// </summary>
         private static Boolean s_isOutputFileWritten;
         #endregion
 
