@@ -81,8 +81,15 @@ namespace GZipTest
 
         #region Threads
         #region Worker threads
-        // Worker threads (compression / decompression) pool
+        /// <summary>
+        /// Worker threads pool
+        /// Depending of the selected compression mode the pool contains objects that represent either compression or decompression threads
+        /// </summary>
         private static Dictionary<Int32, Thread> s_workerThreads;
+        /// <summary>
+        /// Worker threads pool
+        /// Depending of the selected compression mode the pool contains objects that represent either compression or decompression threads
+        /// </summary>
         private static Dictionary<Int32, Thread> WorkerThreads
         {
             get
@@ -118,13 +125,19 @@ namespace GZipTest
         private static Int32 s_maxThreadsCount;
         #endregion
 
-        // Worker threads manager thread
-        private static Thread s_workerThreadsManagerThread;
+        /// <summary>
+        /// Worker threads dispatcher thread object
+        /// </summary>
+        private static Thread s_workerThreadsDispatcherThread;
 
-        // Input file read thread
+        /// <summary>
+        /// Input file read thread object
+        /// </summary>
         private static Thread s_inputFileReadThread;
 
-        // Output file write thread
+        /// <summary>
+        /// Output file write thread object
+        /// </summary>
         private static Thread s_outputFileWriteThread;
         #endregion
 
@@ -797,7 +810,7 @@ namespace GZipTest
             try
             {
                 // Initializing threads
-                s_workerThreadsManagerThread = null;
+                s_workerThreadsDispatcherThread = null;
                 s_inputFileReadThread = null;
                 s_outputFileWriteThread = null;
 
@@ -847,9 +860,9 @@ namespace GZipTest
                 }
 
                 // Starting compression threads manager thread
-                s_workerThreadsManagerThread = new Thread(WorkerThreadsDispatcherThread);
-                s_workerThreadsManagerThread.Name = "Worker threads manager";
-                s_workerThreadsManagerThread.Start();
+                s_workerThreadsDispatcherThread = new Thread(WorkerThreadsDispatcherThread);
+                s_workerThreadsDispatcherThread.Name = "Worker threads manager";
+                s_workerThreadsDispatcherThread.Start();
 
                 // Initializing input file read and write threads
                 s_inputFileReadThread = new Thread(FileReadThread);
@@ -883,9 +896,9 @@ namespace GZipTest
                     // Killing all the threads that has been started if emergency shutdown is requested
                     if (IsEmergencyShutdown)
                     {
-                        if (s_workerThreadsManagerThread != null)
+                        if (s_workerThreadsDispatcherThread != null)
                         {
-                            s_workerThreadsManagerThread.Abort();
+                            s_workerThreadsDispatcherThread.Abort();
                         }
 
                         if (s_outputFileWriteThread != null)
@@ -899,7 +912,7 @@ namespace GZipTest
                         }
 
                         // Waiting for the threads to abort
-                        s_workerThreadsManagerThread.Join();
+                        s_workerThreadsDispatcherThread.Join();
                         s_outputFileWriteThread.Join();
                         s_inputFileReadThread.Join();                      
                         break;
