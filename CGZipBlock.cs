@@ -2,14 +2,19 @@
 
 namespace GZipTest
 {
-    // Represents a block of data compressed using GZipStream class 
-    // with the data itself, and metadata (uncompressed and compressed size) which is stored in an ouput file along with the data.
+    /// <summary>
+    /// Represents a block of data that is compressed using GZipStream class with and metadata.
+    /// The metadata contains original size in bytes of the uncompressed data and size in bytes of the compressed data along with the data itself.
+    /// </summary>
     public class CGZipBlock
     {
         #region FIELDS
         #region Metadata
-        // Buffer size for uncompressed data block size info
-        // Uses to allocate uncompressed data block size buffer and corresponding read operations for the buffer
+        #region Metadata buffers
+        /// <summary>
+        /// Size of a buffer that is used to store byte-encoded representation of integer size of uncompressed data block.
+        /// Is used to allocate the corresponding buffer and write to it.
+        /// </summary>
         private static Int32 MetadataUncompressedBlockSizeBufferLength
         {
             get
@@ -18,8 +23,10 @@ namespace GZipTest
             }
         }
 
-        // Buffer size for compressed data block size info
-        // Uses to allocate compressed data block size buffer and corresponding read operations for the buffer
+        /// <summary>
+        /// Size of a buffer that is used to store byte-encoded representation of integer size of compressed data block.
+        /// Is used to allocate the corresponding buffer and write to it.
+        /// </summary>
         private static Int32 MetadataCompressedBlockSizeBufferLength
         {
             get
@@ -27,9 +34,13 @@ namespace GZipTest
                 return sizeof(Int32);
             }
         }
+        #endregion
 
-        // Buffer size for all metadate
-        // Uses to allocate metadata buffer and corresponding read operations for the buffer
+        #region Sizes
+        /// <summary>
+        /// Size of a buffer that is required to store all metadate of the GZip-block
+        /// Is used to allocate the corresponding buffer and write to it.
+        /// </summary>
         public static Int32 MetadataSize
         {
             get
@@ -37,12 +48,16 @@ namespace GZipTest
                 return MetadataCompressedBlockSizeBufferLength + MetadataUncompressedBlockSizeBufferLength;
             }
         }
-        #endregion
-
-        // Size (in bytes) of an original (uncompressed) block of data
+        
+        /// <summary>
+        /// Size in bytes of an original uncompressed block of data.
+        /// </summary>
         public Int32 DataSizeUncompressed { get; set; }
 
-        // Size (in bytes) of a compressed block of data
+        /// <summary>
+        /// Size in bytes of a compressed block of data.
+        /// Evaluates dynamically, based on compressed data buffer size.
+        /// </summary>
         public Int32 DataSizeCompressed
         {
             get
@@ -51,9 +66,17 @@ namespace GZipTest
                 return Data.Length;
             }
         }
+        #endregion
+        #endregion
 
-        // Block of GZip-compressed data without any metadata
+        #region Compressed data block
+        /// <summary>
+        /// Block of GZip-compressed data with no metadata
+        /// </summary>
         private Byte[] s_data;
+        /// <summary>
+        /// Block of GZip-compressed data with no metadata
+        /// </summary>
         public Byte[] Data
         {
             get
@@ -75,9 +98,14 @@ namespace GZipTest
             }
         }
         #endregion
+        #endregion
 
         #region FUNCTIONS AND METHODS
-        // Converts compressed data and its metadata to byte array (which might be written to an output file, for example)
+        /// <summary>
+        /// Converts compressed data block and its metadata to byte array (which might be written to an output file, for example)
+        /// The order is: Original block size, Compressed block size, Compressed data
+        /// </summary>
+        /// <returns>A byte array that represents metadata and compressed data itself</returns>
         public Byte[] ToByteArray()
         {
             try
@@ -108,7 +136,10 @@ namespace GZipTest
             }
         }
 
-        // Initialize compressed data buffer and metedata from byte buffer that represents the metadata (which has been read from a compressed file, for example)
+        /// <summary>
+        /// Initialize compressed data buffer and metedata from byte array that represents the metadata of a compressed block(which has been read from a compressed file, for example)
+        /// </summary>
+        /// <param name="metadataBuffer">Byte array that represents the metadata of the compressed block</param>
         public void InitializeWithMetadata(Byte[] metadataBuffer)
         {
             try
