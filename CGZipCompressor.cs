@@ -8,44 +8,63 @@ using System.Threading;
 
 namespace GZipTest
 {
+    /// <summary>
+    /// Class that represents multithreaded GZip compressor / decompressor
+    /// </summary>
     public static class CGZipCompressor
     {
         #region HARDCODED SETTINGS
-        // Size in bytes of a compression block from a input uncompressed file
-        // An input file is split to blocks with the specified size and each block is compressed separately by a block compression thread
-        // FEATURE: It might be better decision to evaluated the size dynamically, according to
+        // IMPROVEMENT: It might be better decision to evaluated the size dynamically, according to
         //  * input file size 
         //  * number of CPU cores in the system 
         //  * amount of free RAM in the system
-        // With maximum limit in order to prevent RAM drain and to allow another system with less amount of RAM to decompress the file 
+        // With maximum limit in order to prevent RAM drain and to allow another system with less amount of RAM to decompress the file
+        /// <summary>
+        /// Size in bytes of a compression block from an input uncompressed file.
+        /// The input file is split to blocks with the specified size and each block is compressed separately by a block compression thread.
+        /// </summary>
         private static readonly Int32 s_compressionBlockSize = 128 * 1024 * 1024;
 
-        // Maximum lenght of read queue.
-        // After reaching this value file read thread will wait until data from read queue will be processed by worker thread(s)
+        /// <summary>
+        /// Maximum lenght of read queue.
+        /// After reaching this value file read thread will wait until data from read queue will be processed by a worker thread.
+        /// </summary>
         private static readonly Int32 s_maxProcessingQueueLength = 4;
 
-        // Maximum lenght of write queue. 
-        // After reaching this value file read thread will wait until data from write queue will be written to output file
+        /// <summary>
+        /// Maximum lenght of write queue. 
+        /// After reaching this value file read thread will wait until data from write queue will be written to an output file.
+        /// </summary>
         private static readonly Int32 s_maxWriteQueueLength = 4;
 
-        // Reserves the specified number of CPU cores for the running operations system
-        // If the value is 0, then no reservation applies
-        // If the value is 1, then one CPU core is kept for the system to run more smoothly and responsively to a user's actions (and so on)
+        /// <summary>
+        /// // Reserves the specified number of CPU cores for operations system's needs.
+        /// If the value is 0, then no reservation applies.
+        /// If the value is 1 or more, then one (or more) CPU core is/are kept for operating system to run more smoothly and responsively
+        /// </summary>
+
         private static readonly Int32 s_cpuReservation = 1;
         #endregion
 
         #region FIELDS
-        // Operations mode (compression or decompression)
+        /// <summary>
+        /// Compression mode selector (compress or decompress)
+        /// </summary>
         public static CompressionMode CompressionMode { get; set; }
 
         #region Emergency shutdown
-        // Emergency shutdown flag
-        // Indicates an unexpected error and all running threads will exit as soon as possible
+        /// <summary>
+        /// Indicates an unexpected error and signals to all running threads that they must terminate as soon as possible.
+        /// </summary>
         public static Boolean IsEmergencyShutdown { get; private set; }
 
-        // Emergency shutdown message
-        // When IsEmergencyShutdown flas is set, stores a description of an error that has caused the error
+        /// <summary>
+        /// Stores a description of an error that has caused the process to stop.
+        /// </summary>
         private static String s_emergencyShutdownMessage;
+        /// <summary>
+        /// Stores a description of an error that has caused the process to stop.
+        /// </summary>
         public static String EmergenceShutdownMessage
         {
             get
