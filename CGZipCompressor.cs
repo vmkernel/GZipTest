@@ -267,23 +267,50 @@ namespace GZipTest
         #endregion
 
         #region Inter-thread communication signals
-        // Is used for throttling input file read when input file read queue becames longer than specified in s_maxReadQueueLength
-        // Fires when a file write thread completes writing of a processed data block
+        /// <summary>
+        /// A block of processed data has been written to an output file. 
+        /// Fires when the file writer thread completes write operation for a data block. 
+        /// The signal is used to resume file read thread when it's suspended because the lenght of the processing queue has reached its maximum (defined by s_maxProcessingQueueLength variable)
+        /// </summary>
         private static EventWaitHandle s_signalOutputDataWritten = new EventWaitHandle(false, EventResetMode.AutoReset);
 
-        // Is used for throttling input file read when output file write queue becames longer than specified in s_maxWriteQueueLength
-        private static ManualResetEvent s_signalOutputDataQueueReady = new ManualResetEvent(false);
+        /// <summary>
+        /// The block write queue is ready to receive a new processed block.
+        /// The signal is used for throttling input file read when output Block Write Queue becames longer than specified in s_maxWriteQueueLength
+        /// Sets when the length of the block write queue is less than the allowed maximum. 
+        /// Resets when the lenght of the block write queue is greather than the allowed maximum.
+        /// </summary>
+        private static ManualResetEvent s_signalBlockWriteQueueReady = new ManualResetEvent(false);
 
-        // Is used to signal to File Write thread that a new block of data is ready
+        /// <summary>
+        /// A block of data has been processed.
+        /// Fires when a block processing thread has finished processing a block of data.
+        /// The signal is used to notify the File Write thread that a new block of data is ready, when the thread suspends until a block with correct write sequence number appears in block write queue.
+        /// </summary>
         private static ManualResetEvent s_signalNewBlockReady = new ManualResetEvent(false);
-        // Is used to lock the s_signalNewBlockReady signal while it is being set (by a Block Processing thread) or reset (by the File Write thread)
+        /// <summary>
+        /// Is used to lock the s_signalNewBlockReady signal while it is being set (by a Block Processing thread) or reset (by the File Write thread)
+        /// </summary>
         private static readonly Object s_signalNewBlockReadyLocker = new Object();
         #endregion
         #endregion
 
         #region THREADS DEFINITION
-        // Thread: Universal file read function
-        private static void FileReadThread(object parameter)
+        /// <summary>
+        /// The thread sequentially reads blocks of data from a specified input file and places the blocks to the Block Processing Queue.
+        /// Each block gets a unique sequential number which identifies the block in processing and Block Write Queues and during compression/decompression process.
+        /// 
+        /// The thread will pause reading the file if the File Write thread resets the Block Write Queue signal in order to keep Block Write Queue lenght less than maximum allowed.
+        /// The thread controls lenght of the Block Processing Queue. When the lenght of the queue exceeds predefined maximum the thread pauses read operations until a Block Processing thread picks up a block from the queue.
+        /// 
+        /// Depending of the selected operations mode the behaviour of the thread varies in the following fashion:
+        /// * Compression: reads each block with the size predefined in settings section and puts it to the processing queue as a byte array (Byte[]).
+        /// * Decompresison: for each block the thread reads its metadata (decompressed and compressed block size) that is stored in a compressed file, 
+        ///     converts them from a byte array to integer values, allocates a buffer required to read the compresison block of data,
+        ///     and reads the block to the buffer. Finally the thread puts the compressed block with its metadata to the processing queue as a CGZipBlock object.
+        /// </summary>
+        /// <param name="parameter">Full sting path to the input file stored as an object</param>
+        private static void FileReadThread(Object parameter)
         {
             // Resetting "file is read" flag
             s_isInputFileRead = false;
@@ -303,9 +330,9 @@ namespace GZipTest
                     while (inputStream.Position < inputStream.Length)
                     {
                         // Throtling read of the file until the file writer thread signals that output data queue is ready to receive data
-                        s_signalOutputDataQueueReady.WaitOne();
+                        s_signalBlockWriteQueueReady.WaitOne();
 
-                        // Throttling read of the file to avoid memory drain (controlled by s_maxReadQueueLength variable)
+                        // Throttling read of the file to avoid memory drain (controlled by s_maxProcessingQueueLength variable)
                         Int32 blockProcessingQueueItemsCount;
                         lock (s_blockProcessingQueueLocker)
                         {
@@ -436,8 +463,22 @@ namespace GZipTest
             s_isInputFileRead = true;
         }
 
-        // Thread: Universal file write function
-        private static void FileWriteThread(object parameter)
+        /// <summary>
+        /// The thread sequentially writes blocks of processed data from the Block Write Queue to the specified output file according to the block's sequence number.
+        /// 
+        /// The thread looks up a block with the subsequent write sequence number in the Block Write Queue.
+        /// If there's no such block the thread waits until a Block Processing thread signals that a new block of data has been processed.
+        /// After receiving such signal the thread do the look up once again until the block with the correct write sequence number is placed to the Block Write Queue by a Block Processing thread.
+        /// 
+        /// The thread controls lenght of the Block Write Queue. When the lenght of the queue exceeds predefined maximum the thread signals to the File Read Thread to pause read operations. 
+        /// After the lenght of the queue goes below the maxumum the thread signals to the File Read Thread to resume read operations.
+        /// 
+        /// Depending of the selected operations mode the behaviour of the thread varies in the following fashion:
+        /// * Compression: picks up a compressed data and its metadata as a CGZipBlock object from the Block Write Queue, converts it to a byte array and writes the array to the output file.
+        /// * Decompresison: picks up a decompressed data as a byte array (Byte[]) from the Block Write Queue and writes the array to the output file.
+        /// </summary>
+        /// <param name="parameter">Full sting path to the output file stored as an object</param>
+        private static void FileWriteThread(Object parameter)
         {
             // Resetting "file is read" flag
             s_isOutputFileWritten = false;
@@ -455,7 +496,7 @@ namespace GZipTest
                 using (FileStream outputStream = new FileStream(fileName, FileMode.Create))
                 {
                     // Initial signal to the file read thread to allow reading
-                    s_signalOutputDataQueueReady.Set();
+                    s_signalBlockWriteQueueReady.Set();
 
                     while (!s_isOutputFileWritten) // Don't required, but it's a good fail-safe measure instead of using "while (true)"
                     {
@@ -470,12 +511,12 @@ namespace GZipTest
                         if (writeQueueItemsCount > s_maxWriteQueueLength)
                         {
                             // Signalling to the file read thread to pause reading
-                            s_signalOutputDataQueueReady.Reset();
+                            s_signalBlockWriteQueueReady.Reset();
                         }
                         else
                         {
                             // If lower than maximum allowed then signalling to the file read thread to resume reading
-                            s_signalOutputDataQueueReady.Set();
+                            s_signalBlockWriteQueueReady.Set();
                         }
 
                         if (writeQueueItemsCount <= 0)
@@ -561,7 +602,17 @@ namespace GZipTest
             }
         }
 
-        // Thread: Universal block processing function
+        /// <summary>
+        /// An universal worker thread which either compress or decompress a block of data depending on which compression mode is selected.
+        /// 
+        /// The number of the threads depends on the number of CPU cores in a system which runs the program.
+        /// Depending on the program's settings the number might be lowered if the corresponding settings is set to reserve one (or more) CPU core(s) for an operating system which runs the program.
+        /// 
+        /// Depending of the selected operations mode the behaviour of the thread varies in the following fashion:
+        /// * Compression: picks up an uncompressed data block as a byte array (Byte[]) from the Block Processing Queue, compresses it, transforms to CGZipBlock object, adds metadata to the object and puts it to the Block Write Queue.
+        /// * Decompresison: pick up a compressed CGZipBlock object from the Block Processing Queue, allocates a buffer for decompressed data according to the size that's stored in metadata, decompresses it and puts to the Block Write Queue.
+        /// </summary>
+        /// <param name="parameter">Sequence number of the block that should be processed</param>
         private static void BlockProcessingThread(object parameter)
         {
             try
@@ -670,7 +721,7 @@ namespace GZipTest
 
                                 lock (s_blockWriteQueueLocker)
                                 {
-                                    // Putting processed data block to File Write queue
+                                    // Putting processed data block to Block Write Queue
                                     BlockWriteQueue.Add(threadSequenceNumber, outputBuffer);
                                 }
                             }
@@ -709,7 +760,9 @@ namespace GZipTest
             }
         }
 
-        // Threaded threads dispatcher that starts worker threads and limits their number
+        /// <summary>
+        /// Worker threads dispatcher thread that starts worker threads, cleans up finished thread, limits their number according to predefined settings and kills the threads in case of emergency shutdown.
+        /// </summary>
         private static void WorkerThreadsDispatcherThread()
         {
             // Resetting "all data has been processed" flag
@@ -836,7 +889,9 @@ namespace GZipTest
         #endregion
 
         #region OTHER FUNCTIONS / PROCEDURES
-        // Initialize internal variables
+        /// <summary>
+        /// Initializes internal variables and states before comrpession/decompression process is started
+        /// </summary>
         private static void Initialize()
         {
             try
@@ -879,7 +934,11 @@ namespace GZipTest
             }
         }
 
-        // Execute main compression / decompression logic
+        /// <summary>
+        /// Executes compression / decompression process according to the selected mode that is specified in CompressionMode variable.
+        /// </summary>
+        /// <param name="inputFilePath">Input file full path</param>
+        /// <param name="outputFilePath">Output file full path</param>
         public static void Run(String inputFilePath, String outputFilePath)
         {
             try
