@@ -18,6 +18,7 @@ Main business-logic of the application is held within static class CGZipCompress
 
 Compression mode is set by the property CGZipCompressor.CompressionMode (System.IO.Compression) and might take only two values: Compress and Decompress. In case if the mode somehow receives another value that doesn't equal to this thow, the program will throw an exception.
 
+
 ## Settings
 The program has the following hardcoded settings:
 * Compression block size
@@ -25,8 +26,10 @@ The program has the following hardcoded settings:
 * Maximal lenght of write queue
 * Number of CPU cores which are reserved for operating system's needs
 
+
 ## Exceptions handling
 In case of any exception in any thread the program will set the IsEmergencyShutdown flag and store the exception's message along with soeme details in EmergencyShutdownMessage string variable. This message will be displayed to a user.
+
 
 ## Processing stages
 The whole process consist of this three stages:
@@ -42,8 +45,15 @@ There's three flags that informs the whole compressor class of its current state
 
 When all of this three flags are set to true, it means that the whole process has been finished.
 
+
 ## Reading input and writing output files
 The basic idea for the processes is queues and read/write sequence numbers. 
+
+### File formats
+For an uncompressed file everything is pretty simple - it's just a file as is.
+A compressed file consists of blocks described by CGZipBlock object that contains:
+* Metadata: uncompressed (original) block size (to be able to preallocate a buffer for decompression) and compressed block size (to be able to read the compressed block from the file.
+* Compressed data block which size is stored in the metadata.
 
 ### Queues
 There are two queues:
@@ -54,7 +64,7 @@ Each queue is represented by a *Dictionary<Int32, Object>*.
 Int32 is for a block's sequence number
 Object is for a block of data. 
 
-The final type of this Object varoab;e depends on the selected operation mode. 
+The final type of this Object variable depends on the selected operation mode. 
 If compression mode is selected then it's byte array (Byte[]) in processing queue and CGZipBlock object in file write queue.
 If decompresion mode is selected then it's reversed: GZipBlock in processing queue and byte array (Byte[]) in file write queue.
 
@@ -63,19 +73,13 @@ The length of each queue is limited by s_maxProcessingQueueLength and s_maxWrite
 Every item in the queues consists of the data block and its sequence number which is assigned to a block when it's read from an input file. The sequence number stays with the block of data until it's written to an output file. 
 All blocks of an input file are read to the processing queue. From the processing queue each block is picked up by a block processing thread, processed (compressed/decompressed) and put to the block write queue. From the write queue each processed block is picked up by the file writer thread and written to an output file.
 
-### Sequence numbers:
+### Sequence numbers
 Each block of data is read from an input file and written to an output file sequentionally. To avoid messing with the blocks sequence and write all the processed blocks to an output file in the same order as they were read from an input file, there are two sequence numbers:
 1. Read sequence nunmber - unique counter that starts from zero and assigns to each data block as it's read.
 1. Write sequence number - unique counter that starts from zero and is incremented as a block of processed data with the same sequence number has been written to an output file.
 
 For example: if the write sequence number is X and there's no processed block with the same sequence number in the file write queue, the file write thread will wait untill a block with the same sequence number is placed to the queue. After that the file write thread will pick up the block, write it to an output file and increment the write sequence number. And the loop will countinue until the last block of proccessed data will be written to an output file.
 
-
-
-* An input uncompressed file is split to blocks with predefined size and these blocks are read sequentially by the input file read thread. After that each block is placed to the processing queue along with its sequential number.
-* An input compressed file stores metadata that describes compressed block of data and the block itself. The metadata contains information about size in bytes of the compressed block (to be able to read the block from the input file) and information about its uncompressed size (to allocate decompressied data buffer preciesly).
-
-This sequential number is used as a unique identifier for the block and after processing
 
 ## Multihreading
 Besides main thread that spawns by default from main() procedure the program spawns the following threads:
@@ -91,5 +95,6 @@ Depending on the program's settings the number might be lowered if the correspon
 
 #### Inter-thread communication
 There are three signals that are used for communications betwen threads
-
-TBD
+* **A block of processed data has been written to an output file**. Fires when the file writer thread completes write operation for a data block. The signal is used to resume file read thread when it's suspended because the lenght of the processing queue has reached its maximum (defined by s_maxProcessingQueueLength variable)
+* **The block write queue is ready to receive a new processed block**. The signal is used for throttling input file read thread when output file write queue becames longer than the limit which is specified in s_maxWriteQueueLength variable. It's manually set when the length of the block write queue is less than the allowed maximum and manually reset when the lenght of the block write queue is greather than the allowed maximum.
+* **A block of data has been processed**. Fires when a block processing thread has finished processing a block of data. The signal is used to notify the File Write thread that a new block of data is ready, when the thread is suspended until a block of data with correct write sequence number appears in block write queue.
