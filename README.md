@@ -46,6 +46,11 @@ There's three flags that informs the whole compressor class of its current state
 
 When all of this three flags are set to true, it means that the whole process has been finished.
 
+### Custom classes
+#### CGZipBlock
+Represents a compressed block of data with metadata that contains the compressed block size and its original (uncompressed) size
+#### CGZipCompressor
+A static class that implements main functionality of the program
 
 ## Reading input and writing output files
 The basic idea for the processes is queues and read/write sequence numbers. 
