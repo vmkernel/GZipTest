@@ -13,6 +13,7 @@ Use the following command line arguments:
 Please send us solution source files and Visual Studio project. Briefly describe architecture and algorithms used.
 
 
+
 # Program description
 Main business-logic of the application is held within static class CGZipCompressor.
 
@@ -28,6 +29,7 @@ The program has the following hardcoded settings:
 
 
 ## Exceptions handling
+**TBD**
 In case of any exception in any thread the program will set the IsEmergencyShutdown flag and store the exception's message along with soeme details in EmergencyShutdownMessage string variable. This message will be displayed to a user.
 
 
@@ -60,9 +62,7 @@ There are two queues:
 1. Processing queue (stores block of input file until they are processed by a worker thread)
 1. File write queue (stores the processed blocks until they are written to an output file)
 
-Each queue is represented by a *Dictionary<Int32, Object>*.
-Int32 is for a block's sequence number
-Object is for a block of data. 
+Each queue is represented by a Dictionary<Int32, Object> with block's sequence number as a key and a block of data storead as an object value. 
 
 The final type of this Object variable depends on the selected operation mode. 
 If compression mode is selected then it's byte array (Byte[]) in processing queue and CGZipBlock object in file write queue.
@@ -82,7 +82,11 @@ For example: if the write sequence number is X and there's no processed block wi
 
 
 ## Multihreading
-Besides main thread that spawns by default from main() procedure the program spawns the following threads.
+Besides main thread that spawns by default from main() procedure the program spawns the following threads:
+* Input file reader
+* Output file writer
+* Worker threads
+* Worker threads dispatcher
 
 #### A single input file reader thread
 The thread sequentially reads blocks of data from a specified input file and places the blocks to the Block Processing Queue. Each block gets a unique sequential number which identifies the block in Block Processing and File Write queues and, also, during compression/decompression process.
@@ -105,13 +109,17 @@ Depending of the selected operations mode the behaviour of the thread varies in 
 * Compression: picks up a compressed data and its metadata as a CGZipBlock object from the Block Write Queue, converts it to a byte array and writes the array to the output file.
 * Decompresison: picks up a decompressed data as a byte array (Byte[]) from the Block Write Queue and writes the array to the output file.
 
-#### A single worker threads dispatcher thread
-
 #### One or more worker threads.
 An universal worker thread which either compress or decompress a block of data depending on which compression mode is selected.
 
-The number of the threads depends on the number of CPU cores in a system which runs the program. 
-Depending on the program's settings the number might be lowered if the corresponding settings is set to reserve one (or more) CPU core(s) for an operating system which runs the program.
+The number of the threads depends on the number of CPU cores in a system which runs the program. Depending on the program's settings the number might be lowered if the corresponding settings is set to reserve one (or more) CPU core(s) for an operating system which runs the program.
+
+Depending of the selected operations mode the behaviour of the thread varies in the following fashion:
+* Compression: picks up an uncompressed data block as a byte array (Byte[]) from the Block Processing Queue, compresses it, transforms to CGZipBlock object, adds metadata to the object and puts it to the Block Write Queue.
+* Decompresison: pick up a compressed CGZipBlock object from the Block Processing Queue, allocates a buffer for decompressed data according to the size that's stored in metadata, decompresses it and puts to the Block Write Queue.
+
+#### A single worker threads dispatcher thread
+Worker threads dispatcher thread that starts worker threads, cleans up finished thread, limits their number according to predefined settings and kills the threads in case of emergency shutdown.
 
 #### Inter-thread communication
 There are three signals that are used for communications betwen threads
