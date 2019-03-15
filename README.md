@@ -29,8 +29,7 @@ The program has the following hardcoded settings:
 
 
 ## Exceptions handling
-**TBD**
-In case of any exception in any thread the program will set the IsEmergencyShutdown flag and store the exception's message along with soeme details in EmergencyShutdownMessage string variable. This message will be displayed to a user.
+In case of any exception in any thread the program will set the IsEmergencyShutdown flag and store the exception's message along with some details in EmergencyShutdownMessage string variable, kills all running threads and displays the error message to a user.
 
 
 ## Processing stages
