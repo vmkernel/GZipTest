@@ -84,7 +84,7 @@ For example: if the write sequence number is X and there's no processed block wi
 ## Multihreading
 Besides main thread that spawns by default from main() procedure the program spawns the following threads.
 
-#### A single input file read thread
+#### A single input file reader thread
 The thread sequentially reads blocks of data from a specified input file and places the blocks to the Block Processing Queue. Each block gets a unique sequential number which identifies the block in Block Processing and File Write queues and, also, during compression/decompression process.
 
 The thread will pause reading the file if the File Write thread resets the Block Write Queue Ready signal in order to keep File Write Queue's lenght less than maximum allowed value.
@@ -94,19 +94,16 @@ Depending of the selected operations mode the behaviour of the thread varies in 
 * Compression: reads each block with the size predefined in settings section and puts it to the processing queue as a byte array (Byte[]).
 * Decompresison: for each block the thread reads its metadata (decompressed and compressed block size) that is stored in a compressed file, converts the metadata from a byte array to integer values, allocates a buffer required to read the compresissed block, and reads the block to the buffer. Finally the thread puts the compressed block with its metadata to the processing queue as a CGZipBlock object.
 
-#### A single output file write thread
-        /// The thread sequentially writes blocks of processed data from the Block Write Queue to the specified output file according to the block's sequence number.
-        /// 
-        /// Depending of the selected operations mode the behaviour of the thread varies in the following fashion:
-        /// * Compression: picks up a compressed data and its metadata as a CGZipBlock object from the Block Write Queue, converts it to a byte array and writes the array to the output file.
-        /// * Decompresison: picks up a decompressed data as a byte array (Byte[]) from the Block Write Queue and writes the array to the output file.
-        /// 
-        /// The thread looks up a block with the subsequent write sequence number in the Block Write Queue.
-        /// If there's no such block the thread waits until a Block Processing thread signals that a new block of data has been processed.
-        /// After receiving such signal the thread do the look up once again until the block with the correct write sequence number is placed to the Block Write Queue by a Block Processing thread.
-        /// 
-        /// The thread controls lenght of the Block Write Queue. When the lenght of the queue exceeds predefined maximum the thread signals to the File Read Thread to pause read operations. 
-        /// After the lenght of the queue goes below the maxumum the thread signals to the File Read Thread to resume read operations.
+#### A single output file writer thread
+The thread sequentially writes blocks of processed data from the Block Write Queue to the specified output file according to the block's sequence number.
+
+The thread looks up a block with the subsequent write sequence number in the Block Write Queue. If there's no such block the thread waits until a Block Processing thread signals that a new block of data has been processed. After receiving such signal the thread do the look up once again until the block with the correct write sequence number is placed to the Block Write Queue by a Block Processing thread.
+
+The thread controls lenght of the Block Write Queue. When the lenght of the queue exceeds predefined maximum the thread signals to the File Read Thread to pause read operations. After the lenght of the queue goes below the maxumum the thread signals to the File Read Thread to resume read operations.
+
+Depending of the selected operations mode the behaviour of the thread varies in the following fashion:
+* Compression: picks up a compressed data and its metadata as a CGZipBlock object from the Block Write Queue, converts it to a byte array and writes the array to the output file.
+* Decompresison: picks up a decompressed data as a byte array (Byte[]) from the Block Write Queue and writes the array to the output file.
 
 #### A single worker threads dispatcher thread
 
