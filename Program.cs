@@ -92,15 +92,12 @@ namespace GZipTest
                 }
 
                 outputFilePath = args[2];
-                // TODO: uncomment
-                /* DEBUG
                 if (File.Exists(outputFilePath))
                 {
                     // Output file mustn't exists
                     String message = String.Format("The specified output file is already exists: \"{0}\"\n", outputFilePath);
                     throw new ArgumentException(message);
                 }
-                */
                 #endregion
 
                 #region Starting compression

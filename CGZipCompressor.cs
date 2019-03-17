@@ -4,8 +4,6 @@ using System.IO;
 using System.IO.Compression;
 using System.Threading;
 
-// TODO: check null variables
-
 namespace GZipTest
 {
     /// <summary>
